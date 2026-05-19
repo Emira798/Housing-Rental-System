@@ -1,0 +1,813 @@
+房屋模块功能文档
+
+一、数据库与实体类设计
+
+1. 房屋表（house）：
+   id：整数类型，主键，自增长，房屋唯一标识
+   title：字符串类型，非空，房屋标题
+   description：字符串类型，房屋描述
+   area：小数类型，非空，房屋面积（平方米）
+   price：小数类型，非空，租金价格（元/月）
+   address：字符串类型，非空，房屋地址
+   type_id：整数类型，非空，外键，关联房屋类型表
+   landlord_id：整数类型，非空，外键，关联用户表，房东ID
+   status：整数类型，非空，房屋状态（0-下架，1-待出租，2-已出租）
+   images：字符串类型，房屋图片（JSON格式存储图片路径数组）
+   facilities：字符串类型，配套设施（JSON格式存储设施信息）
+   create_time：日期时间类型，创建时间
+   update_time：日期时间类型，更新时间
+
+2. 房屋类型表（house_type）：
+   id：整数类型，主键，自增长，类型唯一标识
+   name：字符串类型，非空，唯一，类型名称
+   description：字符串类型，类型描述
+   create_time：日期时间类型，创建时间
+   update_time：日期时间类型，更新时间
+
+3. 实体类定义：
+   House类：对应房屋表，包含房屋基本信息属性
+   【springboot/src/main/java/org/example/springboot/entity/House.java】
+   public class House {
+     private Long id;             // 房屋ID
+     private String title;        // 房屋标题
+     private String description;  // 房屋描述
+     private BigDecimal area;     // 面积(平方米)
+     private BigDecimal price;    // 价格(元/月)
+     private String address;      // 地址
+     private Long typeId;         // 房屋类型ID
+     private Long landlordId;     // 房东ID
+     private Integer status;      // 状态(0:下架,1:待出租,2:已出租)
+     private String images;       // 房屋图片(JSON格式)
+     private String facilities;   // 配套设施(JSON格式)
+     private LocalDateTime createTime;  // 创建时间
+     private LocalDateTime updateTime;  // 更新时间
+     
+     // 非数据库字段，用于展示
+     private String typeName;     // 房屋类型名称
+     private String landlordName; // 房东姓名
+     private String landlordImg;  // 房东头像
+   }
+
+   HouseType类：对应房屋类型表，包含类型信息
+   【springboot/src/main/java/org/example/springboot/entity/HouseType.java】
+   public class HouseType {
+     private Long id;             // 类型ID
+     private String name;         // 类型名称
+     private String description;  // 类型描述
+     private LocalDateTime createTime;  // 创建时间
+     private LocalDateTime updateTime;  // 更新时间
+   }
+
+二、房屋管理功能
+
+功能概述：
+系统提供房屋管理功能，包括房屋列表查询、添加、编辑、删除、上下架等操作。管理员可以管理所有房屋信息，房东用户只能管理自己发布的房屋信息。
+
+实现流程：
+1. 后台加载房屋管理页面时，请求后端分页接口获取房屋列表数据
+2. 支持按房屋标题、价格范围、类型、状态等条件筛选
+3. 提供添加房屋、编辑房屋、删除房屋、上下架房屋等操作按钮
+4. 点击相应按钮执行对应操作
+5. 支持房屋图片上传和预览
+6. 支持导出房屋列表为Excel文件
+
+功能实现细节：
+1. 房屋列表管理界面：
+   - 表格顶部提供搜索区域，包含以下筛选条件：
+     - 房屋标题：支持模糊搜索
+     - 价格范围：支持设置最低价和最高价
+     - 房屋类型：支持按房屋类型筛选
+     - 房屋状态：支持按状态筛选（下架、待出租、已出租）
+   - 表格展示房屋主要信息：
+     - 序号
+     - 房屋标题
+     - 面积
+     - 价格
+     - 地址
+     - 房屋类型
+     - 房屋图片（显示缩略图）
+     - 房东
+     - 状态
+     - 创建时间
+     - 操作按钮
+   - 操作按钮根据房屋状态动态显示：
+     - 编辑：所有状态都可编辑
+     - 下架：待出租或已出租状态可下架
+     - 上架：下架状态可上架
+     - 删除：非已出租状态可删除
+
+2. 房屋添加功能：
+   - 弹出添加房屋对话框
+   - 表单包含必填字段验证（标题、面积、价格、地址、类型、描述）
+   - 支持上传多张房屋图片（限制图片格式和大小）
+   - 支持选择配套设施（WiFi、电梯、空调、洗衣机、冰箱、电视、热水器）
+   - 可设置初始状态（下架或待出租）
+
+3. 房屋编辑功能：
+   - 弹出编辑房屋对话框，预填充房屋当前信息
+   - 支持修改房屋基本信息、图片和配套设施
+   - 编辑时可以添加或删除图片
+   - 编辑时可以修改配套设施选项
+
+4. 删除功能：
+   - 点击删除按钮，弹出确认对话框
+   - 删除操作不可恢复，会从数据库中永久删除房屋数据
+   - 已出租状态的房屋不允许删除
+
+5. 图片管理功能：
+   - 支持上传多张房屋图片
+   - 支持预览和删除已上传图片
+   - 图片格式限制为常见图片格式（JPG、PNG等）
+   - 图片大小限制为5MB以内
+
+6. 权限控制：
+   - 管理员可以管理所有房屋
+   - 房东只能管理自己发布的房屋
+   - 系统自动识别当前用户角色，过滤数据权限
+
+7. 数据导出功能：
+   - 支持将当前筛选条件下的房屋列表导出为Excel文件
+   - 导出文件包含房屋主要信息字段
+   - 导出时自动设置合适的列宽
+
+8. 房屋状态管理：
+   - 通过不同颜色标签显示房屋状态（灰色-下架，绿色-待出租，黄色-已出租）
+   - 点击"上架/下架"按钮可切换房屋状态
+   - 状态变更立即生效，影响房屋在前台的展示
+
+关键代码示例：
+【vue3/src/views/backend/house/index.vue：获取房屋列表】
+const fetchData = async () => {
+  loading.value = true
+  try {
+    await request.get('/houses/page', {
+      title: searchForm.title,
+      minPrice: searchForm.minPrice,
+      maxPrice: searchForm.maxPrice,
+      typeId: searchForm.typeId,
+      landLordId: userStore.isLandlord ? userStore.userInfo.id : null,
+      status: searchForm.status,
+      currentPage: currentPage.value,
+      size: pageSize.value
+    }, {
+      onSuccess: (res) => {
+        tableData.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取房屋列表失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【vue3/src/views/backend/house/index.vue：添加房屋】
+const handleAddClick = () => {
+  dialogType.value = 'add'
+  resetForm()
+  dialogVisible.value = true
+}
+
+【vue3/src/views/backend/house/index.vue：编辑房屋】
+const handleEdit = (row) => {
+  dialogType.value = 'edit'
+  resetForm()
+  
+  // 复制数据到表单
+  Object.keys(form).forEach(key => {
+    if (key in row) {
+      form[key] = row[key]
+    }
+  })
+  
+  // 处理图片列表
+  if (row.images) {
+    try {
+      const imageArray = JSON.parse(row.images)
+      imageFileList.value = imageArray.map((url, index) => ({
+        name: `图片${index + 1}`,
+        url: formatImageUrl(url)
+      }))
+    } catch (e) {
+      imageFileList.value = []
+    }
+  }
+  
+  // 处理配套设施
+  if (row.facilities) {
+    try {
+      const facilitiesObj = JSON.parse(row.facilities)
+      facilitiesSelected.value = Object.keys(facilitiesObj).filter(key => facilitiesObj[key])
+    } catch (e) {
+      facilitiesSelected.value = []
+    }
+  }
+  
+  dialogVisible.value = true
+}
+
+【vue3/src/views/backend/house/index.vue：提交表单】
+const submitForm = () => {
+  formRef.value.validate(async (valid) => {
+    if (valid) {
+      submitLoading.value = true
+      try {
+        // 处理图片信息
+        const images = imageFileList.value.map(file => {
+          const url = file.url
+          if (url.startsWith(baseAPI)) {
+            return url.replace(baseAPI, '')
+          }
+          return url
+        })
+        form.images = JSON.stringify(images)
+        
+        // 处理配套设施
+        const facilities = {}
+        const allFacilities = ['wifi', 'elevator', 'airConditioner', 'washer', 'refrigerator', 'television', 'waterHeater']
+        allFacilities.forEach(facility => {
+          facilities[facility] = facilitiesSelected.value.includes(facility)
+        })
+        form.facilities = JSON.stringify(facilities)
+        
+        if (dialogType.value === 'add') {
+          // 添加
+          await request.post('/houses', form, {
+            successMsg: '添加成功',
+            errorMsg: '添加失败',
+            onSuccess: () => {
+              dialogVisible.value = false
+              fetchData()
+            }
+          })
+        } else {
+          // 编辑
+          await request.put(`/houses/${form.id}`, form, {
+            successMsg: '更新成功',
+            errorMsg: '更新失败',
+            onSuccess: () => {
+              dialogVisible.value = false
+              fetchData()
+            }
+          })
+        }
+      } catch (error) {
+        console.error(`${dialogType.value === 'add' ? '添加' : '更新'}房屋失败:`, error)
+      } finally {
+        submitLoading.value = false
+      }
+    }
+  })
+}
+
+【springboot/src/main/java/org/example/springboot/controller/HouseController.java：分页查询房屋】
+@Operation(summary = "分页查询房屋信息")
+@GetMapping("/page")
+public Result<?> getHousesByPage(
+        @RequestParam(defaultValue = "") String title,
+        @RequestParam(required = false) BigDecimal minPrice,
+        @RequestParam(required = false) BigDecimal maxPrice,
+        @RequestParam(required = false) Long typeId,
+        @RequestParam(required = false) Long landLordId,
+        @RequestParam(required = false) Integer status,
+        @RequestParam(defaultValue = "1") Integer currentPage,
+        @RequestParam(defaultValue = "10") Integer size) {
+    Page<House> page = houseService.getHousesByPage(title, landLordId, minPrice, maxPrice, typeId, status, currentPage, size);
+    return Result.success(page);
+}
+
+【springboot/src/main/java/org/example/springboot/controller/HouseController.java：创建房屋】
+@Operation(summary = "发布新房屋")
+@PostMapping
+public Result<?> createHouse(@RequestBody House house) {
+    // 检查当前用户是否登录以及角色权限
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        return Result.error("获取当前用户信息失败，请重新登录");
+    }
+    
+    // 检查用户是否为房东或管理员
+    if (!"LANDLORD".equals(currentUser.getRoleCode()) && !"ADMIN".equals(currentUser.getRoleCode())) {
+        return Result.error("只有房东或管理员可以发布房屋");
+    }
+    
+    houseService.createHouse(house);
+    return Result.success("发布成功");
+}
+
+三、房屋上下架功能
+
+功能概述：
+系统提供房屋上下架功能，允许房东或管理员控制房屋的展示状态。上架的房屋会在前台展示给租户，下架的房屋不会在前台展示。
+
+实现流程：
+1. 在房屋列表中，根据当前房屋状态显示"上架"或"下架"按钮
+2. 点击按钮后弹出确认对话框
+3. 确认后调用后端接口修改房屋状态
+4. 状态修改成功后刷新列表数据
+
+关键代码示例：
+【vue3/src/views/backend/house/index.vue：修改房屋状态】
+const handleChangeStatus = (row, status) => {
+  const statusText = status === 0 ? '下架' : '上架'
+  ElMessageBox.confirm(`确认将房屋「${row.title}」${statusText}吗？`, '提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    try {
+      await request.put(`/houses/${row.id}/status`, null, {
+        params: { status },
+        successMsg: `${statusText}成功`,
+        errorMsg: `${statusText}失败`,
+        onSuccess: () => {
+          fetchData()
+        }
+      })
+    } catch (error) {
+      console.error(`${statusText}房屋失败:`, error)
+    }
+  }).catch(() => {
+    // 取消操作，不做任何处理
+  })
+}
+
+【springboot/src/main/java/org/example/springboot/controller/HouseController.java：修改房屋状态】
+@Operation(summary = "修改房屋状态")
+@PutMapping("/{id}/status")
+public Result<?> updateHouseStatus(
+        @PathVariable Long id, 
+        @RequestParam Integer status) {
+    // 检查当前用户是否登录
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        return Result.error("获取当前用户信息失败，请重新登录");
+    }
+    
+    houseService.updateHouseStatus(id, status);
+    return Result.success("状态更新成功");
+}
+
+【springboot/src/main/java/org/example/springboot/service/HouseService.java：修改房屋状态】
+@Transactional
+public void updateHouseStatus(Long id, Integer status) {
+    // 获取当前登录用户
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        throw new ServiceException("获取当前用户信息失败");
+    }
+    
+    // 检查房屋是否存在
+    House existingHouse = houseMapper.selectById(id);
+    if (existingHouse == null) {
+        throw new ServiceException("房屋不存在");
+    }
+    
+    // 检查权限：只有管理员或房东可以修改
+    if (!"ADMIN".equals(currentUser.getRoleCode()) && !currentUser.getId().equals(existingHouse.getLandlordId())) {
+        throw new ServiceException("无权修改该房屋状态");
+    }
+    
+    // 检查状态值是否有效
+    if (status < 0 || status > 2) {
+        throw new ServiceException("无效的房屋状态值");
+    }
+    
+    House house = new House();
+    house.setId(id);
+    house.setStatus(status);
+    house.setUpdateTime(LocalDateTime.now());
+    
+    int result = houseMapper.updateById(house);
+    if (result <= 0) {
+        throw new ServiceException("更新房屋状态失败");
+    }
+}
+
+四、前台房屋列表功能
+
+功能概述：
+系统提供前台房屋列表功能，展示所有待出租状态的房屋信息，支持按标题搜索、按房屋类型和价格区间筛选，以卡片形式展示房屋基本信息。
+
+实现流程：
+1. 加载房屋列表页面时请求后端分页接口获取房屋数据
+2. 支持按房屋标题搜索
+3. 支持按房屋类型和价格区间筛选
+4. 以卡片形式展示房屋信息
+5. 点击房屋卡片跳转到房屋详情页
+
+关键代码示例：
+【vue3/src/views/frontend/house/HouseList.vue：获取房屋列表】
+const fetchHouseList = async () => {
+  loading.value = true
+  try {
+    await request.get('/houses/page', {
+      title: searchForm.title,
+      minPrice: searchForm.minPrice,
+      maxPrice: searchForm.maxPrice,
+      typeId: searchForm.typeId,
+      status: searchForm.status,
+      currentPage: currentPage.value,
+      size: pageSize.value
+    }, {
+      onSuccess: (res) => {
+        houseList.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取房屋列表失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【vue3/src/views/frontend/house/HouseList.vue：搜索和筛选】
+const handleSearch = () => {
+  // 设置为第一页并获取数据
+  if (currentPage.value !== 1) {
+    currentPage.value = 1
+  } else {
+    // 直接获取数据
+    fetchHouseList()
+  }
+}
+
+const resetSearch = () => {
+  // 重置所有筛选条件
+  searchForm.title = ''
+  searchForm.minPrice = null
+  searchForm.maxPrice = null
+  searchForm.typeId = null
+  
+  // 重置价格临时字段
+  minPriceTemp.value = null
+  maxPriceTemp.value = null
+  
+  if (currentPage.value !== 1) {
+    currentPage.value = 1
+  } else {
+    // 直接获取数据
+    fetchHouseList()
+  }
+}
+
+【vue3/src/views/frontend/house/HouseList.vue：跳转到详情页】
+const goToDetail = (id) => {
+  router.push(`/houses/${id}`)
+}
+
+功能实现细节：
+1. 房屋列表页面布局：
+   - 顶部搜索横幅：提供标题搜索框
+   - 筛选区域：提供房屋类型和价格区间筛选
+   - 房屋列表：以网格布局展示房屋卡片
+   - 分页控件：支持页码跳转和每页条数调整
+
+2. 房屋卡片展示：
+   - 房屋主图：显示房屋第一张图片
+   - 房屋价格：显示在图片右下角
+   - 房屋标题：显示在图片下方
+   - 房屋地址：显示在标题下方
+   - 房屋标签：显示面积、类型和配套设施标签
+
+3. 搜索和筛选功能：
+   - 标题搜索：支持关键词模糊搜索
+   - 房屋类型筛选：支持选择不同房屋类型
+   - 价格区间筛选：支持选择预设价格区间或自定义价格范围
+
+4. 交互体验优化：
+   - 卡片悬停效果：鼠标悬停时卡片上浮
+   - 加载动画：数据加载过程中显示骨架屏
+   - 空数据处理：无符合条件的房源时显示提示信息
+   - 响应式布局：适配不同屏幕尺寸
+
+5. 性能优化：
+   - 图片懒加载：优化页面加载速度
+   - 分页加载：避免一次加载过多数据
+   - 防抖处理：输入框搜索添加延迟处理
+
+五、房屋详情功能
+
+功能概述：
+系统提供房屋详情功能，展示房屋的详细信息，包括房屋图片、基本信息、详细描述、配套设施等，并提供联系房东和租赁功能。
+
+实现流程：
+1. 根据房屋ID获取房屋详情数据
+2. 展示房屋图片轮播、基本信息、详情描述和配套设施
+3. 提供联系房东功能，显示房东信息和联系方式
+4. 提供租赁功能，允许租户创建租赁订单
+
+关键代码示例：
+【vue3/src/views/frontend/house/HouseDetail.vue：获取房屋详情】
+const fetchHouseDetail = async () => {
+  loading.value = true
+  try {
+    await request.get(`/houses/${houseId}`, {}, {
+      onSuccess: (res) => {
+        house.value = res
+        // 初始化订单表单
+        if (res) {
+          orderForm.houseId = res.id
+        }
+        // 数据加载完成后，确保DOM更新并启用滚动
+        nextTick(() => {
+          document.body.style.overflow = 'auto'
+          window.scrollTo(0, 0)
+        })
+      },
+      onError: () => {
+        house.value = null
+      }
+    })
+  } catch (error) {
+    console.error('获取房屋详情失败:', error)
+    house.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+【vue3/src/views/frontend/house/HouseDetail.vue：处理租赁】
+const handleRent = () => {
+  if (!isLoggedIn.value) {
+    ElMessageBox.confirm(
+      '请先登录后再进行租赁操作',
+      '提示',
+      {
+        confirmButtonText: '去登录',
+        cancelButtonText: '取消',
+        type: 'info'
+      }
+    ).then(() => {
+      router.push({
+        path: '/login',
+        query: { redirect: route.fullPath }
+      })
+    }).catch(() => {})
+    return
+  }
+  
+  if (!isTenant.value) {
+    ElMessage.warning('只有租客角色可以租赁房屋')
+    return
+  }
+  
+  if (house.value.status !== 1) {
+    ElMessage.warning('该房屋当前不可租赁')
+    return
+  }
+  
+  // 显示租赁对话框
+  rentDialogVisible.value = true
+}
+
+【vue3/src/views/frontend/house/HouseDetail.vue：创建订单】
+const createOrder = async () => {
+  creating.value = true
+  try {
+    const orderData = {
+      houseId: orderForm.houseId,
+      amount: parseFloat(totalAmount.value),
+      deposit: parseFloat(house.value.price)
+    }
+    
+    await request.post('/orders', orderData, {
+      successMsg: '订单创建成功',
+      onSuccess: (res) => {
+        rentDialogVisible.value = false
+        
+        // 提示用户是否前往支付
+        ElMessageBox.confirm(
+          '订单已创建成功，是否立即支付？',
+          '提示',
+          {
+            confirmButtonText: '去支付',
+            cancelButtonText: '稍后支付',
+            type: 'success'
+          }
+        ).then(() => {
+          router.push('/my-orders')
+        }).catch(() => {
+          router.push('/my-orders')
+        })
+      }
+    })
+  } catch (error) {
+    console.error('创建订单失败:', error)
+  } finally {
+    creating.value = false
+  }
+}
+
+功能实现细节：
+1. 房屋详情页面布局：
+   - 顶部标题区域：显示房屋标题、地址和价格
+   - 左侧主要内容：包含图片轮播、房屋信息卡片
+   - 右侧联系区域：显示房东信息和联系方式
+
+2. 房屋图片展示：
+   - 图片轮播：支持多张图片轮播展示
+   - 图片预览：支持点击查看大图
+   - 无图片处理：无图片时显示占位图
+
+3. 房屋信息展示：
+   - 基本信息：展示户型、面积、状态等
+   - 房屋详情：展示详细描述
+   - 配套设施：以图标和文字形式展示可用设施
+
+4. 联系房东功能：
+   - 显示房东头像和姓名
+   - 提供显示联系电话按钮
+   - 点击按钮显示联系方式对话框
+   - 提供安全提示信息
+
+5. 租赁功能：
+   - 提供立即租赁按钮（仅对租户角色显示）
+   - 点击按钮弹出租赁确认对话框
+   - 支持选择租赁周期（月付、季付、半年付、年付）
+   - 自动计算总金额
+   - 提交订单后跳转到支付页面
+
+6. 权限控制：
+   - 未登录用户点击租赁按钮提示登录
+   - 非租户角色不能进行租赁操作
+   - 房东不能租赁自己的房屋
+   - 非待出租状态的房屋不可租赁
+
+7. 交互体验优化：
+   - 加载动画：数据加载过程中显示骨架屏
+   - 错误处理：房屋不存在时显示提示信息
+   - 响应式布局：适配不同屏幕尺寸
+   - 安全提示：提供租房安全提示信息
+
+六、房屋类型管理功能
+
+功能概述：
+系统提供房屋类型管理功能，支持对房屋类型进行增删改查操作。房屋类型是房屋的基本属性，用于对房屋进行分类，如一室一厅、两室一厅等。
+
+实现流程：
+1. 加载房屋类型管理页面时请求后端分页接口获取类型列表数据
+2. 支持按类型名称搜索
+3. 提供添加、编辑、删除类型的功能
+4. 类型数据变更后刷新列表
+
+关键代码示例：
+【vue3/src/views/backend/house-type/index.vue：获取房屋类型列表】
+const fetchData = async () => {
+  loading.value = true
+  try {
+    await request.get('/house-types/page', {
+      name: searchForm.name,
+      currentPage: currentPage.value,
+      size: pageSize.value
+    }, {
+      onSuccess: (res) => {
+        tableData.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取房屋类型列表失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【vue3/src/views/backend/house-type/index.vue：添加房屋类型】
+const handleAddClick = () => {
+  dialogType.value = 'add'
+  resetForm()
+  dialogVisible.value = true
+}
+
+【vue3/src/views/backend/house-type/index.vue：提交表单】
+const submitForm = () => {
+  formRef.value.validate(async (valid) => {
+    if (valid) {
+      submitLoading.value = true
+      try {
+        if (dialogType.value === 'add') {
+          // 添加
+          await request.post('/house-types', form, {
+            successMsg: '添加成功',
+            errorMsg: '添加失败',
+            onSuccess: () => {
+              dialogVisible.value = false
+              fetchData()
+            }
+          })
+        } else {
+          // 编辑
+          await request.put(`/house-types/${form.id}`, form, {
+            successMsg: '更新成功',
+            errorMsg: '更新失败',
+            onSuccess: () => {
+              dialogVisible.value = false
+              fetchData()
+            }
+          })
+        }
+      } catch (error) {
+        console.error(`${dialogType.value === 'add' ? '添加' : '更新'}房屋类型失败:`, error)
+      } finally {
+        submitLoading.value = false
+      }
+    }
+  })
+}
+
+功能实现细节：
+1. 房屋类型列表管理界面：
+   - 顶部搜索区域：支持按类型名称搜索
+   - 表格展示类型信息：类型名称、描述、创建时间、更新时间
+   - 操作按钮：编辑和删除
+
+2. 房屋类型添加功能：
+   - 弹出添加类型对话框
+   - 表单包含必填字段验证（类型名称、描述）
+   - 类型名称长度限制在2-20个字符
+   - 类型描述长度限制在200个字符以内
+
+3. 房屋类型编辑功能：
+   - 弹出编辑类型对话框，预填充类型当前信息
+   - 支持修改类型名称和描述
+
+4. 房屋类型删除功能：
+   - 点击删除按钮，弹出确认对话框
+   - 删除操作不可恢复，会从数据库中永久删除类型数据
+   - 如果类型已被房屋使用，则不允许删除
+
+5. 数据验证：
+   - 类型名称不能为空
+   - 类型描述不能为空
+   - 类型名称不能重复
+
+七、与其他模块的交互
+
+1. 房屋模块与用户模块的交互：
+   - 房屋创建时关联当前登录的房东用户ID
+   - 房屋列表展示时显示房东姓名和头像
+   - 房屋详情页面显示房东联系信息
+   - 权限控制：只有房东和管理员可以发布和管理房屋
+
+2. 房屋模块与订单模块的交互：
+   - 房屋详情页面提供租赁功能，创建租赁订单
+   - 房屋被租赁后状态变更为"已出租"
+   - 订单完成后房屋状态可恢复为"待出租"
+   - 已出租状态的房屋不能被删除
+
+3. 房屋模块与文件上传模块的交互：
+   - 房屋添加和编辑时支持上传多张房屋图片
+   - 文件上传服务保存图片并返回URL
+   - 房屋服务将图片URL以JSON格式存储到数据库
+   - 前端展示时解析JSON数据显示图片
+
+4. 房屋模块与房屋类型模块的交互：
+   - 房屋添加和编辑时选择房屋类型
+   - 房屋列表和详情页面显示房屋类型名称
+   - 前台房屋列表页面支持按房屋类型筛选
+
+八、安全性和性能优化
+
+1. 安全性措施：
+   - 权限控制：严格控制房屋的创建、修改和删除权限
+   - 数据验证：前后端双重验证房屋数据
+   - 防SQL注入：使用参数化查询和MyBatis-Plus框架
+   - 防XSS攻击：过滤用户输入的HTML标签
+   - 敏感信息保护：房东联系方式需点击后才显示
+
+2. 性能优化措施：
+   - 分页查询：避免一次加载过多数据
+   - 图片优化：限制图片大小，优化加载速度
+   - 缓存策略：缓存常用的房屋类型数据
+   - 延迟加载：图片采用懒加载方式
+   - 索引优化：为常用查询字段创建索引
+
+九、异常处理
+
+1. 前端异常处理：
+   - 网络错误：请求失败时显示友好提示
+   - 数据为空：无数据时显示空状态提示
+   - 加载状态：数据加载过程中显示加载动画
+   - 表单验证：输入错误时显示错误提示
+
+2. 后端异常处理：
+   - 业务异常：使用ServiceException封装业务错误
+   - 权限异常：无权限操作时返回403错误
+   - 数据库异常：数据库操作失败时回滚事务
+   - 日志记录：记录关键操作和异常信息
+
+十、总结
+
+房屋模块是整个租房系统的核心模块，实现了房屋信息的管理、展示、搜索和租赁功能。通过前后端分离的架构，实现了高效的数据交互和良好的用户体验。主要功能包括：
+
+1. 房屋管理：支持房屋的增删改查、上下架操作
+2. 房屋类型管理：支持房屋类型的增删改查
+3. 前台房屋列表：展示可租赁房屋，支持搜索和筛选
+4. 房屋详情：展示房屋详细信息，支持联系房东和租赁
+5. 图片管理：支持多图片上传、预览和删除
+6. 配套设施：支持配套设施的选择和展示
+
+系统充分考虑了安全性、性能和用户体验，实现了一个功能完善、操作便捷的房屋租赁平台。 

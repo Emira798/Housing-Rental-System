@@ -1,0 +1,651 @@
+新闻公告模块功能文档
+
+一、数据库与实体类设计
+
+1. 数据库设计
+
+公告表（announcement）：
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| id | bigint | 主键ID，自增长 |
+| title | varchar(255) | 公告标题，非空 |
+| content | text | 公告内容，非空 |
+| admin_id | bigint | 发布管理员ID，关联用户表 |
+| status | tinyint | 状态：0-下架，1-发布 |
+| create_time | datetime | 创建时间 |
+| update_time | datetime | 更新时间 |
+
+2. 实体类定义
+
+【springboot/src/main/java/org/example/springboot/entity/Announcement.java】
+public class Announcement {
+    // 主键ID
+    private Long id;
+    
+    // 公告标题
+    private String title;
+    
+    // 公告内容
+    private String content;
+    
+    // 发布管理员ID
+    private Long adminId;
+    
+    // 状态(0:下架,1:发布)
+    private Integer status;
+    
+    // 创建时间
+    private LocalDateTime createTime;
+    
+    // 更新时间
+    private LocalDateTime updateTime;
+    
+    // 非数据库字段 - 管理员信息
+    private User admin;
+}
+
+实体类使用了Lombok的@Data注解简化getter/setter方法的编写，使用@TableName("announcement")指定对应的数据库表名。@TableId注解标识主键字段，@TableField(exist = false)标识非数据库字段，用于关联查询时存储管理员信息。 
+
+二、公告管理功能
+
+1. 公告列表查询功能
+
+功能概述：
+系统提供公告列表查询功能，支持按标题关键词和状态筛选，并提供分页功能。前台用户只能查看已发布的公告，后台管理员可以查看所有公告。
+
+实现流程：
+1. 用户进入公告列表页面
+2. 可选择按标题关键词和状态进行筛选
+3. 系统根据筛选条件查询数据库，返回符合条件的公告列表
+4. 分页展示公告数据，包括标题、内容摘要、发布人、发布时间等信息
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/controller/AnnouncementController.java：获取公告列表】
+@Operation(summary = "获取公告列表")
+@GetMapping("/announcements")
+public Result<?> getAnnouncements(
+        @RequestParam(defaultValue = "") String title,
+        @RequestParam(required = false) Integer status,
+        @RequestParam(defaultValue = "1") Integer currentPage,
+        @RequestParam(defaultValue = "10") Integer size) {
+    return Result.success(announcementService.getAnnouncementsByPage(title, status, currentPage, size));
+}
+
+【springboot/src/main/java/org/example/springboot/service/AnnouncementService.java：分页查询公告】
+public Page<Announcement> getAnnouncementsByPage(String title, Integer status, Integer currentPage, Integer size) {
+    Page<Announcement> page = new Page<>(currentPage, size);
+    LambdaQueryWrapper<Announcement> queryWrapper = new LambdaQueryWrapper<>();
+    
+    // 添加查询条件
+    if (StringUtils.isNotBlank(title)) {
+        queryWrapper.like(Announcement::getTitle, title);
+    }
+    if (status != null) {
+        queryWrapper.eq(Announcement::getStatus, status);
+    }
+    
+    // 按创建时间倒序排序
+    queryWrapper.orderByDesc(Announcement::getCreateTime);
+    
+    // 执行查询
+    Page<Announcement> resultPage = announcementMapper.selectPage(page, queryWrapper);
+    
+    // 填充管理员信息
+    resultPage.getRecords().forEach(this::fillAdminInfo);
+    
+    return resultPage;
+}
+
+【vue3/src/views/backend/announcement/index.vue：获取公告列表】
+const fetchAnnouncementList = async () => {
+  loading.value = true
+  try {
+    await request.get('/announcements', {
+      title: searchForm.title,
+      status: searchForm.status === '' ? null : searchForm.status,
+      currentPage: currentPage.value,
+      size: pageSize.value
+    }, {
+      onSuccess: (res) => {
+        announcementList.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取公告列表失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+功能实现细节：
+1. 后台公告管理页面布局：
+   - 顶部操作区：包含"发布新公告"按钮
+   - 搜索区域：包含标题搜索框和状态下拉选择框
+   - 表格展示区：展示公告ID、标题、内容摘要、发布人、状态、发布时间等信息
+   - 操作列：包含查看、编辑、发布/下架、删除按钮
+   - 分页控件：支持页码跳转和每页条数调整
+
+2. 前台公告展示页面布局：
+   - 公告卡片列表：展示公告标题、内容摘要、发布时间
+   - 查看更多按钮：导航到公告列表页面
+   - 点击公告卡片可查看公告详情
+
+3. 权限控制：
+   - 前台用户只能查看已发布的公告
+   - 后台管理员可以查看、编辑、发布/下架、删除公告
+
+2. 公告详情查看功能
+
+功能概述：
+系统提供公告详情查看功能，允许用户查看公告的完整内容。前台用户可以查看已发布的公告详情，后台管理员可以查看任何公告的详情。
+
+实现流程：
+1. 用户在公告列表页面点击公告标题或"查看"按钮
+2. 系统根据公告ID查询公告详情
+3. 展示公告详情，包括标题、内容、发布人、发布时间等信息
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/controller/AnnouncementController.java：获取公告详情】
+@Operation(summary = "获取公告详情")
+@GetMapping("/announcements/{id}")
+public Result<?> getAnnouncementById(@PathVariable Long id) {
+    return Result.success(announcementService.getById(id));
+}
+
+【springboot/src/main/java/org/example/springboot/service/AnnouncementService.java：获取公告详情】
+public Announcement getById(Long id) {
+    Announcement announcement = announcementMapper.selectById(id);
+    if (announcement == null) {
+        throw new ServiceException("公告不存在");
+    }
+    
+    // 填充管理员信息
+    fillAdminInfo(announcement);
+    
+    return announcement;
+}
+
+【vue3/src/views/backend/announcement/index.vue：查看公告详情】
+const handleViewAnnouncement = (row) => {
+  Object.assign(viewForm, row)
+  viewDialogVisible.value = true
+}
+
+功能实现细节：
+1. 后台公告详情对话框：
+   - 公告标题：居中显示
+   - 公告元信息：包含发布人、发布时间、状态
+   - 公告内容：完整展示，支持换行显示
+
+2. 前台公告详情页面：
+   - 公告标题：居中显示，字体加大
+   - 公告元信息：包含发布时间
+   - 公告内容：完整展示，支持换行显示
+   - 返回按钮：返回公告列表页面
+
+3. 内容格式化：
+   - 将换行符转换为HTML的<br>标签，保持原始格式 
+
+3. 公告发布功能
+
+功能概述：
+系统提供公告发布功能，允许管理员发布新的公告。公告发布后，可以选择立即发布或保存为草稿状态。
+
+实现流程：
+1. 管理员点击"发布新公告"按钮
+2. 弹出公告发布对话框
+3. 填写公告标题、内容，选择发布状态
+4. 提交表单，系统验证数据有效性
+5. 保存公告到数据库，记录发布管理员信息和发布时间
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/controller/AnnouncementController.java：发布公告】
+@Operation(summary = "发布公告")
+@PostMapping("/admin/announcements")
+@PreAuthorize("hasRole('ADMIN')")
+public Result<?> createAnnouncement(@RequestBody Announcement announcement) {
+    announcementService.createAnnouncement(announcement);
+    return Result.success("发布成功");
+}
+
+【springboot/src/main/java/org/example/springboot/service/AnnouncementService.java：发布公告】
+@Transactional
+public void createAnnouncement(Announcement announcement) {
+    // 获取当前用户
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        throw new ServiceException("获取当前用户信息失败");
+    }
+    
+    // 检查用户是否为管理员
+    if (!"ADMIN".equals(currentUser.getRoleCode())) {
+        throw new ServiceException("只有管理员可以发布公告");
+    }
+    
+    // 设置管理员ID
+    announcement.setAdminId(currentUser.getId());
+    
+    // 设置默认状态为发布
+    if (announcement.getStatus() == null) {
+        announcement.setStatus(1);
+    }
+    
+    // 设置创建时间和更新时间
+    LocalDateTime now = LocalDateTime.now();
+    announcement.setCreateTime(now);
+    announcement.setUpdateTime(now);
+    
+    // 插入数据库
+    announcementMapper.insert(announcement);
+}
+
+【vue3/src/views/backend/announcement/index.vue：发布公告】
+const handleAddAnnouncement = () => {
+  isEdit.value = false
+  dialogVisible.value = true
+}
+
+const submitForm = () => {
+  formRef.value.validate(async (valid) => {
+    if (valid) {
+      submitLoading.value = true
+      try {
+        if (isEdit.value) {
+          // 编辑
+          await request.put(`/admin/announcements/${form.id}`, form, {
+            successMsg: '更新成功',
+            onSuccess: () => {
+              dialogVisible.value = false
+              fetchAnnouncementList()
+            }
+          })
+        } else {
+          // 新增
+          await request.post('/admin/announcements', form, {
+            successMsg: '发布成功',
+            onSuccess: () => {
+              dialogVisible.value = false
+              fetchAnnouncementList()
+            }
+          })
+        }
+      } catch (error) {
+        console.error('提交失败:', error)
+      } finally {
+        submitLoading.value = false
+      }
+    }
+  })
+}
+
+功能实现细节：
+1. 公告发布对话框：
+   - 标题输入框：必填，限制长度为2-100个字符
+   - 内容输入框：必填，使用文本域，支持多行输入
+   - 状态选择：单选按钮，选择"发布"或"草稿"
+   - 提交按钮：点击后提交表单
+
+2. 表单验证：
+   - 标题必填，长度在2-100个字符之间
+   - 内容必填
+   - 状态必选
+
+3. 权限控制：
+   - 只有管理员角色可以发布公告
+   - 使用Spring Security的@PreAuthorize注解进行权限控制
+
+4. 公告编辑功能
+
+功能概述：
+系统提供公告编辑功能，允许管理员编辑已发布或草稿状态的公告，修改公告标题、内容和发布状态。
+
+实现流程：
+1. 管理员在公告列表页面点击"编辑"按钮
+2. 弹出公告编辑对话框，预填充公告原有信息
+3. 修改公告标题、内容或状态
+4. 提交表单，系统验证数据有效性
+5. 更新公告信息到数据库，记录更新时间
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/controller/AnnouncementController.java：更新公告】
+@Operation(summary = "更新公告")
+@PutMapping("/admin/announcements/{id}")
+@PreAuthorize("hasRole('ADMIN')")
+public Result<?> updateAnnouncement(@PathVariable Long id, @RequestBody Announcement announcement) {
+    announcement.setId(id);
+    announcementService.updateAnnouncement(announcement);
+    return Result.success("更新成功");
+}
+
+【springboot/src/main/java/org/example/springboot/service/AnnouncementService.java：更新公告】
+@Transactional
+public void updateAnnouncement(Announcement announcement) {
+    // 获取当前用户
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        throw new ServiceException("获取当前用户信息失败");
+    }
+    
+    // 检查用户是否为管理员
+    if (!"ADMIN".equals(currentUser.getRoleCode())) {
+        throw new ServiceException("只有管理员可以更新公告");
+    }
+    
+    // 检查公告是否存在
+    Announcement existingAnnouncement = announcementMapper.selectById(announcement.getId());
+    if (existingAnnouncement == null) {
+        throw new ServiceException("公告不存在");
+    }
+    
+    // 设置更新时间
+    announcement.setUpdateTime(LocalDateTime.now());
+    
+    // 更新数据库
+    announcementMapper.updateById(announcement);
+}
+
+【vue3/src/views/backend/announcement/index.vue：编辑公告】
+const handleEditAnnouncement = (row) => {
+  isEdit.value = true
+  Object.assign(form, row)
+  dialogVisible.value = true
+}
+
+功能实现细节：
+1. 公告编辑对话框：
+   - 与发布公告对话框相同，但预填充原有公告信息
+   - 标题输入框：预填充原标题
+   - 内容输入框：预填充原内容
+   - 状态选择：预选择原状态
+
+2. 表单验证：
+   - 与发布公告相同
+
+3. 权限控制：
+   - 只有管理员角色可以编辑公告
+   - 使用Spring Security的@PreAuthorize注解进行权限控制 
+
+5. 公告状态管理功能
+
+功能概述：
+系统提供公告状态管理功能，允许管理员切换公告的发布状态，包括发布和下架操作。发布状态的公告对前台用户可见，下架状态的公告仅后台可见。
+
+实现流程：
+1. 管理员在公告列表页面点击"发布"或"下架"按钮
+2. 系统弹出确认对话框
+3. 管理员确认操作
+4. 系统更新公告状态，记录更新时间
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/controller/AnnouncementController.java：修改公告状态】
+@Operation(summary = "修改公告状态")
+@PutMapping("/admin/announcements/{id}/status")
+@PreAuthorize("hasRole('ADMIN')")
+public Result<?> updateAnnouncementStatus(
+        @PathVariable Long id,
+        @RequestParam Integer status) {
+    announcementService.updateStatus(id, status);
+    return Result.success("状态修改成功");
+}
+
+【springboot/src/main/java/org/example/springboot/service/AnnouncementService.java：修改公告状态】
+@Transactional
+public void updateStatus(Long id, Integer status) {
+    // 获取当前用户
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        throw new ServiceException("获取当前用户信息失败");
+    }
+    
+    // 检查用户是否为管理员
+    if (!"ADMIN".equals(currentUser.getRoleCode())) {
+        throw new ServiceException("只有管理员可以修改公告状态");
+    }
+    
+    // 检查公告是否存在
+    Announcement existingAnnouncement = announcementMapper.selectById(id);
+    if (existingAnnouncement == null) {
+        throw new ServiceException("公告不存在");
+    }
+    
+    // 检查状态是否有效
+    if (status != 0 && status != 1) {
+        throw new ServiceException("无效的状态值");
+    }
+    
+    // 更新状态
+    Announcement announcement = new Announcement();
+    announcement.setId(id);
+    announcement.setStatus(status);
+    announcement.setUpdateTime(LocalDateTime.now());
+    
+    announcementMapper.updateById(announcement);
+}
+
+【vue3/src/views/backend/announcement/index.vue：切换公告状态】
+const handleToggleStatus = (row) => {
+  const newStatus = row.status === 1 ? 0 : 1
+  const statusText = newStatus === 1 ? '发布' : '下架'
+  
+  ElMessageBox.confirm(
+    `确定要${statusText}该公告吗？`,
+    '提示',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(() => {
+    request.put(`/admin/announcements/${row.id}/status`, null, {
+      params: { status: newStatus },
+      successMsg: `${statusText}成功`,
+      onSuccess: () => {
+        fetchAnnouncementList()
+      }
+    })
+  }).catch(() => {})
+}
+
+功能实现细节：
+1. 状态切换按钮：
+   - 当公告状态为"已发布"时，显示"下架"按钮
+   - 当公告状态为"已下架"时，显示"发布"按钮
+   - 按钮颜色区分：发布按钮为绿色，下架按钮为黄色
+
+2. 状态确认对话框：
+   - 显示操作确认信息
+   - 包含确认和取消按钮
+
+3. 状态显示：
+   - 在公告列表中使用不同颜色的标签显示状态
+   - 已发布：绿色标签
+   - 已下架：灰色标签
+
+4. 权限控制：
+   - 只有管理员角色可以修改公告状态
+   - 使用Spring Security的@PreAuthorize注解进行权限控制
+
+6. 公告删除功能
+
+功能概述：
+系统提供公告删除功能，允许管理员删除不需要的公告。删除操作不可恢复，需要进行二次确认。
+
+实现流程：
+1. 管理员在公告列表页面点击"删除"按钮
+2. 系统弹出确认对话框，提醒删除操作不可恢复
+3. 管理员确认删除
+4. 系统从数据库中删除公告记录
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/controller/AnnouncementController.java：删除公告】
+@Operation(summary = "删除公告")
+@DeleteMapping("/admin/announcements/{id}")
+@PreAuthorize("hasRole('ADMIN')")
+public Result<?> deleteAnnouncement(@PathVariable Long id) {
+    announcementService.deleteAnnouncement(id);
+    return Result.success("删除成功");
+}
+
+【springboot/src/main/java/org/example/springboot/service/AnnouncementService.java：删除公告】
+@Transactional
+public void deleteAnnouncement(Long id) {
+    // 获取当前用户
+    User currentUser = JwtTokenUtils.getCurrentUser();
+    if (currentUser == null) {
+        throw new ServiceException("获取当前用户信息失败");
+    }
+    
+    // 检查用户是否为管理员
+    if (!"ADMIN".equals(currentUser.getRoleCode())) {
+        throw new ServiceException("只有管理员可以删除公告");
+    }
+    
+    // 检查公告是否存在
+    Announcement existingAnnouncement = announcementMapper.selectById(id);
+    if (existingAnnouncement == null) {
+        throw new ServiceException("公告不存在");
+    }
+    
+    // 删除公告
+    announcementMapper.deleteById(id);
+}
+
+【vue3/src/views/backend/announcement/index.vue：删除公告】
+const handleDeleteAnnouncement = (row) => {
+  ElMessageBox.confirm(
+    '确定要删除该公告吗？删除后无法恢复',
+    '警告',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(() => {
+    request.delete(`/admin/announcements/${row.id}`, {
+      successMsg: '删除成功',
+      onSuccess: () => {
+        fetchAnnouncementList()
+      }
+    })
+  }).catch(() => {})
+}
+
+功能实现细节：
+1. 删除按钮：
+   - 在公告列表的操作列中显示红色的"删除"按钮
+   - 点击后弹出确认对话框
+
+2. 删除确认对话框：
+   - 显示警告信息，提醒删除操作不可恢复
+   - 包含确认和取消按钮
+   - 确认按钮为红色，表示危险操作
+
+3. 权限控制：
+   - 只有管理员角色可以删除公告
+   - 使用Spring Security的@PreAuthorize注解进行权限控制
+
+4. 操作反馈：
+   - 删除成功后显示成功提示
+   - 刷新公告列表，更新页面数据 
+
+三、前台公告展示功能
+
+1. 首页公告展示功能
+
+功能概述：
+系统在前台首页展示最新的公告信息，以卡片形式显示公告标题、内容摘要和发布时间，让用户可以快速了解系统的最新动态和重要通知。
+
+实现流程：
+1. 用户访问系统首页
+2. 系统查询最新的已发布公告（状态为1）
+3. 以卡片形式展示公告信息，包括标题、内容摘要和发布时间
+4. 用户可以点击公告卡片查看详情，或点击"查看全部公告"按钮进入公告列表页面
+
+关键代码示例：
+【vue3/src/views/frontend/Home.vue：获取最新公告】
+const fetchLatestAnnouncements = async () => {
+  loadingAnnouncements.value = true
+  try {
+    await request.get('/announcements', {
+      status: 1, // 只获取已发布的公告
+      currentPage: 1,
+      size: 3
+    }, {
+      onSuccess: (res) => {
+        announcements.value = res.records
+      }
+    })
+  } catch (error) {
+    console.error('获取公告失败:', error)
+  } finally {
+    loadingAnnouncements.value = false
+  }
+}
+
+【vue3/src/views/frontend/Home.vue：查看公告详情】
+const viewAnnouncementDetail = (announcement) => {
+  router.push(`/announcements/${announcement.id}`)
+}
+
+【vue3/src/views/frontend/Home.vue：获取内容摘要】
+const getExcerpt = (content) => {
+  if (!content) return ''
+  return content.length > 100 ? content.substring(0, 100) + '...' : content
+}
+
+功能实现细节：
+1. 首页公告区域布局：
+   - 区域标题："最新公告"
+   - 区域副标题："了解平台最新动态和活动信息"
+   - 公告卡片列表：横向排列，响应式布局
+   - "查看全部公告"按钮：导航到公告列表页面
+
+2. 公告卡片设计：
+   - 公告标题：加粗显示
+   - 内容摘要：限制字数，超出部分显示省略号
+   - 发布时间：格式化显示
+   - "查看详情"按钮：点击后导航到公告详情页面
+   - 鼠标悬停效果：卡片轻微上浮，增强交互体验
+
+3. 加载状态处理：
+   - 数据加载中显示骨架屏
+   - 无数据时显示空状态提示
+   - 加载失败时在控制台记录错误
+
+4. 数据展示优化：
+   - 内容摘要处理：截取前100个字符，超出部分显示省略号
+   - 日期格式化：使用DateUtils工具类格式化日期
+
+2. 与其他模块的交互
+
+交互方式：
+1. 用户模块：公告关联发布管理员信息，展示管理员姓名
+2. 权限控制：只有管理员可以管理公告，普通用户只能查看已发布的公告
+3. 前台展示：在首页和专门的公告页面展示公告信息
+
+四、总结
+
+新闻公告模块是系统重要的信息发布渠道，用于向用户传达系统的最新动态、活动信息和重要通知。该模块主要包括公告的发布、编辑、查看、状态管理和删除等功能。
+
+1. 数据结构设计：
+   - 公告表设计合理，包含必要的字段如标题、内容、发布人、状态等
+   - 实体类定义清晰，使用了MyBatis-Plus的注解简化开发
+
+2. 功能完整性：
+   - 后台管理功能完善，包括公告的CRUD操作和状态管理
+   - 前台展示功能友好，支持公告列表和详情查看
+   - 权限控制严格，确保只有管理员可以管理公告
+
+3. 用户体验优化：
+   - 公告卡片设计美观，展示必要信息
+   - 分页功能减轻数据加载压力
+   - 响应式布局适应不同设备
+   - 加载状态和空状态处理，提升用户体验
+
+4. 安全性考虑：
+   - 严格的权限控制，使用Spring Security的注解进行权限验证
+   - 后端数据验证，防止非法数据提交
+   - 敏感操作（如删除）需要二次确认
+
+通过新闻公告模块，系统管理员可以方便地发布和管理公告信息，用户可以及时了解系统的最新动态，提升了系统的信息传达效率和用户体验。 

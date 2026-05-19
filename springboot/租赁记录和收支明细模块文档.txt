@@ -1,0 +1,1201 @@
+租赁记录和收支明细模块功能文档
+
+一、租赁记录模块
+
+1. 数据库与实体类设计
+
+1.1 租赁记录表（lease_record）：
+   id：整数类型，主键，自增长，租赁记录唯一标识
+   order_id：整数类型，非空，外键，关联订单表
+   house_id：整数类型，非空，外键，关联房屋表
+   tenant_id：整数类型，非空，外键，关联用户表，租客ID
+   landlord_id：整数类型，非空，外键，关联用户表，房东ID
+   start_date：日期类型，非空，租期开始日期
+   end_date：日期类型，非空，租期结束日期
+   rent_amount：小数类型，非空，租金金额
+   payment_cycle：字符串类型，非空，支付周期（MONTHLY/QUARTERLY/YEARLY）
+   status：整数类型，非空，状态（0-已取消，1-租赁中，2-已结束，3-已退租）
+   actual_end_date：日期类型，实际结束日期
+   contract_url：字符串类型，合同文件URL
+   evaluation_score：整数类型，评价分数（1-5）
+   evaluation_content：字符串类型，评价内容
+   create_time：日期时间类型，创建时间
+   update_time：日期时间类型，更新时间
+
+1.2 实体类定义：
+   LeaseRecord类：对应租赁记录表，包含租赁记录基本信息属性
+   【springboot/src/main/java/org/example/springboot/entity/LeaseRecord.java】
+   public class LeaseRecord {
+     private Long id;                // 记录ID
+     private Long orderId;           // 订单ID
+     private Long houseId;           // 房屋ID
+     private Long tenantId;          // 租客ID
+     private Long landlordId;        // 房东ID
+     private LocalDate startDate;    // 租期开始日期
+     private LocalDate endDate;      // 租期结束日期
+     private BigDecimal rentAmount;  // 租金金额
+     private String paymentCycle;    // 支付周期(MONTHLY/QUARTERLY/YEARLY)
+     private Integer status;         // 状态(0:已取消,1:租赁中,2:已结束,3:已退租)
+     private LocalDate actualEndDate; // 实际结束日期
+     private String contractUrl;     // 合同文件URL
+     private Integer evaluationScore; // 评价分数(1-5)
+     private String evaluationContent; // 评价内容
+     private LocalDateTime createTime; // 创建时间
+     private LocalDateTime updateTime; // 更新时间
+     
+     // 非数据库字段，用于展示
+     private House house;            // 关联房屋信息
+     private User tenant;            // 关联租客信息
+     private User landlord;          // 关联房东信息
+     private Order order;            // 关联订单信息
+   }
+
+2. 租赁记录创建功能
+
+功能概述：
+系统提供租赁记录创建功能，当订单确认后，自动创建租赁记录并生成租赁合同。租赁记录包含租期信息、租金金额、支付周期等关键信息，关联订单、房屋、租客和房东。
+
+实现流程：
+1. 订单确认后，调用租赁记录服务的创建方法
+2. 获取相关的房屋、租客、房东信息
+3. 创建租赁记录，设置租期、租金和支付周期
+4. 生成租赁合同
+5. 保存租赁记录到数据库
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/service/LeaseRecordService.java：创建租赁记录】
+@Transactional
+public LeaseRecord createLeaseRecord(Order order) {
+  // 查询相关信息
+  House house = houseMapper.selectById(order.getHouseId());
+  User tenant = userMapper.selectById(order.getTenantId());
+  User landlord = userMapper.selectById(order.getLandlordId());
+  
+  if (house == null || tenant == null || landlord == null) {
+    throw new ServiceException("创建租赁记录失败：缺少必要信息");
+  }
+  
+  // 创建租赁记录
+  LeaseRecord leaseRecord = new LeaseRecord();
+  leaseRecord.setOrderId(order.getId());
+  leaseRecord.setHouseId(house.getId());
+  leaseRecord.setTenantId(tenant.getId());
+  leaseRecord.setLandlordId(landlord.getId());
+  
+  // 设置租期
+  LocalDate startDate = LocalDate.now();
+  LocalDate endDate = startDate.plusMonths(defaultContractDuration);
+  leaseRecord.setStartDate(startDate);
+  leaseRecord.setEndDate(endDate);
+  
+  // 设置租金和支付周期
+  leaseRecord.setRentAmount(house.getPrice());
+  leaseRecord.setPaymentCycle("MONTHLY"); // 默认月付
+  
+  // 设置初始状态为租赁中
+  leaseRecord.setStatus(1);
+  
+  // 生成合同
+  String contractUrl = contractGenerator.generateContract(leaseRecord, order, house, tenant, landlord);
+  leaseRecord.setContractUrl(contractUrl);
+  
+  // 保存租赁记录
+  leaseRecordMapper.insert(leaseRecord);
+  
+  return leaseRecord;
+}
+
+3. 合同生成功能
+
+功能概述：
+系统提供合同生成功能，根据租赁记录、订单、房屋、租客和房东信息生成租赁合同，并提供手动重新生成合同的功能。合同以PDF格式保存，可供用户下载。
+
+实现流程：
+1. 房东或管理员点击"生成合同"按钮
+2. 系统验证用户权限
+3. 获取租赁记录及相关信息
+4. 调用合同生成器生成PDF合同
+5. 更新租赁记录的合同URL
+6. 返回生成结果
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/service/LeaseRecordService.java：手动生成合同】
+@Transactional
+public LeaseRecord generateContractForLeaseRecord(Long id) {
+  LeaseRecord leaseRecord = leaseRecordMapper.selectById(id);
+  if (leaseRecord == null) {
+    throw new ServiceException("租赁记录不存在");
+  }
+  
+  // 查询相关信息
+  House house = houseMapper.selectById(leaseRecord.getHouseId());
+  User tenant = userMapper.selectById(leaseRecord.getTenantId());
+  User landlord = userMapper.selectById(leaseRecord.getLandlordId());
+  Order order = orderMapper.selectById(leaseRecord.getOrderId());
+  
+  if (house == null || tenant == null || landlord == null || order == null) {
+    throw new ServiceException("生成合同失败：缺少必要信息");
+  }
+  
+  // 生成合同
+  String contractUrl = contractGenerator.generateContract(leaseRecord, order, house, tenant, landlord);
+  if (contractUrl == null) {
+    throw new ServiceException("合同生成失败，请稍后重试");
+  }
+  
+  // 更新租赁记录的合同URL
+  leaseRecord.setContractUrl(contractUrl);
+  leaseRecordMapper.updateById(leaseRecord);
+  
+  log.info("手动生成合同成功，租赁记录ID：{}，合同URL：{}", id, contractUrl);
+  
+  return leaseRecord;
+}
+
+【vue3/src/views/backend/lease/index.vue：生成或重新生成合同】
+const handleGenerateContract = async (row) => {
+  try {
+    const isRegen = row.contractUrl && row.contractUrl !== '';
+    const confirmMsg = isRegen ? '确定要重新生成合同吗？' : '确定要生成合同吗？';
+    
+    try {
+      await ElMessageBox.confirm(confirmMsg, '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      });
+      
+      loading.value = true;
+      
+      await request.post(`/lease-records/${row.id}/generate-contract`, null, {
+        successMsg: isRegen ? '合同重新生成成功' : '合同生成成功',
+        onSuccess: () => {
+          // 刷新租赁记录列表
+          fetchLeaseRecords();
+        }
+      });
+    } catch (cancelError) {
+      // 用户取消操作，不做处理
+      console.log('用户取消操作');
+    }
+  } catch (error) {
+    console.error('生成合同失败:', error);
+    ElMessage.error(error.message || '生成合同失败，请稍后重试');
+  } finally {
+    loading.value = false;
+  }
+} 
+
+4. 租赁记录列表查询功能
+
+功能概述：
+系统提供租赁记录列表查询功能，根据不同用户角色展示不同的租赁记录列表。租客可以查看自己的租赁记录，房东可以查看与自己房屋相关的租赁记录，管理员可以查看所有租赁记录。支持按租赁状态筛选，并提供分页功能。
+
+实现流程：
+1. 根据用户角色加载对应的租赁记录列表页面
+2. 支持按租赁状态筛选
+3. 分页展示租赁记录列表数据
+4. 显示租赁记录基本信息、房屋信息、租客信息、房东信息等
+5. 根据租赁状态和用户角色显示不同的操作按钮
+
+功能实现细节：
+1. 前台我的租赁记录页面（租客视角）：
+   - 顶部筛选区域：支持按租赁状态筛选
+   - 租赁记录卡片展示：
+     - 订单编号和创建时间
+     - 房屋基本信息（标题、地址、图片）
+     - 租期和租金信息
+     - 租赁状态
+     - 评价信息（如有）
+     - 操作按钮（下载合同、查看详情、评价）
+
+2. 后台租赁记录管理页面（房东/管理员视角）：
+   - 搜索区域：支持按租赁状态筛选
+   - 表格展示租赁记录信息：
+     - 租赁记录ID
+     - 订单信息
+     - 房屋信息
+     - 租客信息
+     - 房东信息
+     - 租期和租金
+     - 租赁状态
+     - 评价分数
+     - 操作按钮（查看详情、下载合同、生成合同）
+
+3. 权限控制：
+   - 租客只能查看自己的租赁记录
+   - 房东只能查看与自己房屋相关的租赁记录
+   - 管理员可以查看所有租赁记录
+   - 操作按钮根据租赁状态和用户角色动态显示
+
+关键代码示例：
+【vue3/src/views/frontend/lease/MyLeaseRecords.vue：租客获取租赁记录列表】
+const fetchLeaseRecords = async () => {
+  loading.value = true
+  try {
+    // 构建查询参数
+    const params = {
+      currentPage: currentPage.value,
+      size: pageSize.value,
+      status: filterForm.status !== '' ? filterForm.status : undefined
+    }
+    
+    await request.get('/lease-records/tenant', params, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        leaseRecords.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取租赁记录失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【vue3/src/views/backend/lease/index.vue：后台获取租赁记录列表】
+const fetchLeaseRecords = async () => {
+  loading.value = true
+  try {
+    // 构建查询参数
+    const params = {
+      currentPage: currentPage.value,
+      size: pageSize.value,
+      status: filterForm.status !== '' ? filterForm.status : undefined
+    }
+    
+    // API路径根据用户角色确定
+    let apiPath = '/lease-records'
+    if (userStore.userInfo?.roleCode === 'LANDLORD') {
+      apiPath = '/lease-records/landlord'
+    } else if (userStore.userInfo?.roleCode === 'ADMIN') {
+      apiPath = '/lease-records/admin'
+    }
+    
+    await request.get(apiPath, params, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        leaseRecords.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取租赁记录失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/LeaseRecordService.java：分页查询租赁记录】
+public Page<LeaseRecord> getTenantLeaseRecordsByPage(Integer currentPage, Integer size, Integer status) {
+  Long userId = JwtTokenUtils.getCurrentUser().getId();
+  if (userId == null) {
+    throw new ServiceException("获取当前用户信息失败");
+  }
+  
+  LambdaQueryWrapper<LeaseRecord> queryWrapper = new LambdaQueryWrapper<>();
+  queryWrapper.eq(LeaseRecord::getTenantId, userId);
+  
+  if (status != null) {
+    queryWrapper.eq(LeaseRecord::getStatus, status);
+  }
+  
+  Page<LeaseRecord> page = leaseRecordMapper.selectPage(new Page<>(currentPage, size), queryWrapper);
+  
+  // 加载关联信息
+  for (LeaseRecord record : page.getRecords()) {
+    loadAssociatedInfo(record);
+  }
+  
+  return page;
+}
+
+5. 租赁记录详情查看功能
+
+功能概述：
+系统提供租赁记录详情查看功能，允许用户查看租赁记录的详细信息，包括租赁记录基本信息、房屋信息、租客信息、房东信息、合同信息等。
+
+实现流程：
+1. 用户在租赁记录列表页面点击"详情"按钮
+2. 弹出租赁记录详情对话框
+3. 展示租赁记录详情，包括关联的房屋、租客、房东信息
+
+关键代码示例：
+【vue3/src/views/frontend/lease/MyLeaseRecords.vue：查看租赁详情】
+const viewLeaseDetail = (record) => {
+  Object.assign(detailForm, record)
+  detailDialogVisible.value = true
+}
+
+【vue3/src/views/backend/lease/index.vue：查看详情】
+const viewDetail = (row) => {
+  Object.assign(detailForm, row)
+  detailDialogVisible.value = true
+}
+
+功能实现细节：
+1. 租赁记录详情对话框内容：
+   - 订单信息：订单编号
+   - 租赁状态：已取消、租赁中、已结束、已退租
+   - 房屋信息：标题、地址
+   - 租客信息：姓名、电话
+   - 房东信息：姓名、电话
+   - 租期信息：开始日期、结束日期、实际结束日期（如有）
+   - 租金信息：月租金、支付周期
+   - 合同信息：下载合同按钮（如有合同）
+   - 评价信息：评分和评价内容（如有）
+   - 时间信息：创建时间、更新时间
+
+2. 前台租赁详情展示：
+   - 使用el-descriptions组件展示详情信息
+   - 状态使用带颜色的标签展示
+   - 时间格式化显示
+   - 提供下载合同按钮
+
+3. 后台租赁详情展示：
+   - 与前台类似，但包含更多管理信息
+   - 管理员可查看更完整的信息
+   - 房东和管理员可以生成/重新生成合同
+
+6. 合同下载功能
+
+功能概述：
+系统提供合同下载功能，允许用户下载租赁合同。租客和房东可以下载与自己相关的合同，管理员可以下载所有合同。
+
+实现流程：
+1. 用户点击"下载合同"按钮
+2. 系统验证用户权限
+3. 获取合同文件路径
+4. 将合同文件发送给用户进行下载
+
+关键代码示例：
+【vue3/src/views/frontend/lease/MyLeaseRecords.vue：下载合同】
+const downloadContract = (record) => {
+  if (!record.contractUrl) {
+    ElMessage.warning('合同文件不存在')
+    return
+  }
+  
+  // 获取token
+  const token = localStorage.getItem('token')
+  if (!token) {
+    ElMessage.warning('您需要登录才能下载合同')
+    router.push('/login')
+    return
+  }
+  
+  // 创建一个隐藏的a标签实现下载
+  const downloadUrl = baseAPI + '/lease-records/' + record.id + '/download-contract?token=' + token
+  const link = document.createElement('a')
+  link.href = downloadUrl
+  link.download = '租赁合同_' + record.id + '.pdf'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+【springboot/src/main/java/org/example/springboot/controller/LeaseRecordController.java：下载合同】
+@Operation(summary = "下载租赁合同")
+@GetMapping("/{id}/download-contract")
+public void downloadContract(@PathVariable Long id, HttpServletResponse response) {
+  // 获取当前用户
+  User currentUser = JwtTokenUtils.getCurrentUser();
+  if (currentUser == null) {
+    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    return;
+  }
+  
+  // 获取租赁记录
+  LeaseRecord leaseRecord = leaseRecordService.getById(id);
+  if (leaseRecord == null) {
+    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+    return;
+  }
+  
+  // 检查权限（只有管理员、房东和对应的租户可以下载合同）
+  String roleCode = currentUser.getRoleCode();
+  if (!"ADMIN".equals(roleCode) 
+      && !leaseRecord.getLandlordId().equals(currentUser.getId())
+      && !leaseRecord.getTenantId().equals(currentUser.getId())) {
+    response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+    return;
+  }
+  
+  // 检查合同是否存在
+  if (StringUtils.isEmpty(leaseRecord.getContractUrl())) {
+    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+    return;
+  }
+  
+  // 获取文件路径
+  String contractPath = "files" + leaseRecord.getContractUrl();
+  File file = new File(contractPath);
+  if (!file.exists()) {
+    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+    return;
+  }
+  
+  // 设置响应头
+  response.setContentType("application/pdf");
+  response.setHeader("Content-Disposition", "attachment; filename=contract_" + id + ".pdf");
+  
+  try {
+    // 将文件内容写入响应流
+    Files.copy(file.toPath(), response.getOutputStream());
+    response.getOutputStream().flush();
+  } catch (IOException e) {
+    log.error("下载合同文件失败", e);
+    response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+  }
+} 
+
+7. 租赁评价功能
+
+功能概述：
+系统提供租赁评价功能，允许租客在租赁结束后对房屋和租赁体验进行评价。评价内容包括评分和评价文字，用于帮助其他租客了解房屋的实际情况和房东的服务质量。
+
+实现流程：
+1. 租客在租赁结束后，可以在"我的租赁记录"页面对已结束的租赁进行评价
+2. 点击"评价"按钮，弹出评价对话框
+3. 填写评分（1-5星）和评价内容
+4. 提交评价
+5. 系统保存评价信息，并更新租赁记录
+
+关键代码示例：
+【vue3/src/views/frontend/lease/MyLeaseRecords.vue：提交评价】
+const submitEvaluation = async () => {
+  if (!evaluationForm.score) {
+    ElMessage.warning('请选择评分')
+    return
+  }
+  
+  if (!evaluationForm.content || evaluationForm.content.trim() === '') {
+    ElMessage.warning('请填写评价内容')
+    return
+  }
+  
+  loading.value = true
+  try {
+    await request.post(`/lease-records/${currentLeaseId.value}/evaluate`, {
+      score: evaluationForm.score,
+      content: evaluationForm.content
+    }, {
+      onSuccess: () => {
+        ElMessage.success('评价提交成功')
+        evaluationDialogVisible.value = false
+        // 重新加载租赁记录列表
+        fetchLeaseRecords()
+      }
+    })
+  } catch (error) {
+    console.error('提交评价失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/controller/LeaseRecordController.java：评价接口】
+@Operation(summary = "对租赁记录进行评价")
+@PostMapping("/{id}/evaluate")
+public Result<Void> evaluateLeaseRecord(@PathVariable Long id, @RequestBody EvaluationDTO evaluationDTO) {
+  // 获取当前用户
+  User currentUser = JwtTokenUtils.getCurrentUser();
+  if (currentUser == null) {
+    return Result.unauthorized();
+  }
+  
+  try {
+    leaseRecordService.evaluateLeaseRecord(id, currentUser.getId(), evaluationDTO.getScore(), evaluationDTO.getContent());
+    return Result.success();
+  } catch (ServiceException e) {
+    return Result.fail(e.getMessage());
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/LeaseRecordService.java：评价处理】
+@Transactional(rollbackFor = Exception.class)
+public void evaluateLeaseRecord(Long leaseRecordId, Long userId, Integer score, String content) {
+  // 获取租赁记录
+  LeaseRecord leaseRecord = getById(leaseRecordId);
+  if (leaseRecord == null) {
+    throw new ServiceException("租赁记录不存在");
+  }
+  
+  // 验证是否为租客本人
+  if (!leaseRecord.getTenantId().equals(userId)) {
+    throw new ServiceException("只有租客本人可以评价");
+  }
+  
+  // 验证租赁状态是否为已结束
+  if (leaseRecord.getStatus() != LeaseStatus.ENDED.getCode()) {
+    throw new ServiceException("只有已结束的租赁才能评价");
+  }
+  
+  // 验证评分范围
+  if (score < 1 || score > 5) {
+    throw new ServiceException("评分必须在1-5之间");
+  }
+  
+  // 验证评价内容
+  if (StringUtils.isEmpty(content)) {
+    throw new ServiceException("评价内容不能为空");
+  }
+  
+  // 更新租赁记录的评价信息
+  leaseRecord.setEvaluationScore(score);
+  leaseRecord.setEvaluationContent(content);
+  updateById(leaseRecord);
+  
+  // 更新房屋的平均评分（可选）
+  updateHouseAverageScore(leaseRecord.getHouseId());
+  
+  log.info("租赁记录[{}]评价成功，评分：{}，内容：{}", leaseRecordId, score, content);
+}
+
+功能实现细节：
+1. 评价对话框：
+   - 评分组件：使用el-rate组件，允许选择1-5星
+   - 评价内容输入框：使用el-input组件的textarea类型，限制最大字数为200
+   - 提交按钮：点击后提交评价
+
+2. 评价展示：
+   - 在租赁记录卡片中展示已评价的记录的评分和评价内容
+   - 在租赁记录详情中展示评价信息
+   - 评分使用星星图标直观展示
+
+3. 评价限制：
+   - 只有租赁状态为"已结束"的记录才能评价
+   - 每个租赁记录只能评价一次
+   - 评价后不可修改
+
+4. 评价数据处理：
+   - 评分必须在1-5之间
+   - 评价内容不能为空
+   - 评价信息保存到租赁记录中
+   - 可选功能：更新房屋的平均评分
+
+
+
+二、收支明细模块
+
+1. 数据库与实体类设计
+
+1.1 数据库设计
+
+收支明细表（transaction）：
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| id | bigint | 主键ID |
+| user_id | bigint | 用户ID，关联用户表 |
+| type | tinyint | 交易类型：1-收入，2-支出 |
+| amount | decimal(10,2) | 交易金额 |
+| description | varchar(255) | 交易描述 |
+| order_id | bigint | 关联订单ID，可为空 |
+| lease_record_id | bigint | 关联租赁记录ID，可为空 |
+| create_time | datetime | 创建时间 |
+| update_time | datetime | 更新时间 |
+
+1.2 实体类设计
+
+【springboot/src/main/java/org/example/springboot/entity/Transaction.java】
+```java
+@Data
+@TableName("transaction")
+public class Transaction {
+    /**
+     * 主键ID
+     */
+    @TableId(type = IdType.AUTO)
+    private Long id;
+    
+    /**
+     * 用户ID
+     */
+    private Long userId;
+    
+    /**
+     * 交易类型：1-收入，2-支出
+     */
+    private Integer type;
+    
+    /**
+     * 交易金额
+     */
+    private BigDecimal amount;
+    
+    /**
+     * 交易描述
+     */
+    private String description;
+    
+    /**
+     * 关联订单ID
+     */
+    private Long orderId;
+    
+    /**
+     * 关联租赁记录ID
+     */
+    private Long leaseRecordId;
+    
+    /**
+     * 创建时间
+     */
+    private LocalDateTime createTime;
+    
+    /**
+     * 更新时间
+     */
+    private LocalDateTime updateTime;
+    
+    /**
+     * 非数据库字段 - 用户信息
+     */
+    @TableField(exist = false)
+    private User user;
+    
+    /**
+     * 非数据库字段 - 订单信息
+     */
+    @TableField(exist = false)
+    private Order order;
+    
+    /**
+     * 非数据库字段 - 租赁记录信息
+     */
+    @TableField(exist = false)
+    private LeaseRecord leaseRecord;
+}
+```
+
+1.3 枚举类定义
+
+【springboot/src/main/java/org/example/springboot/enums/TransactionType.java】
+```java
+public enum TransactionType {
+    /**
+     * 收入
+     */
+    INCOME(1, "收入"),
+    
+    /**
+     * 支出
+     */
+    EXPENSE(2, "支出");
+    
+    private final Integer code;
+    private final String desc;
+    
+    TransactionType(Integer code, String desc) {
+        this.code = code;
+        this.desc = desc;
+    }
+    
+    public Integer getCode() {
+        return code;
+    }
+    
+    public String getDesc() {
+        return desc;
+    }
+    
+    public static String getDescByCode(Integer code) {
+        for (TransactionType type : TransactionType.values()) {
+            if (type.getCode().equals(code)) {
+                return type.getDesc();
+            }
+        }
+        return "";
+    }
+} 
+```
+
+2. 收支明细列表查询功能
+
+功能概述：
+系统提供收支明细列表查询功能，允许用户查看自己的收入和支出记录。支持按交易类型（收入/支出）筛选，按时间范围筛选，并提供分页功能。管理员可以查看所有用户的收支明细。
+
+实现流程：
+1. 用户进入收支明细页面
+2. 可选择交易类型（收入/支出/全部）进行筛选
+3. 可选择时间范围进行筛选
+4. 系统根据筛选条件查询数据库，返回符合条件的收支明细列表
+5. 分页展示收支明细数据
+
+关键代码示例：
+【vue3/src/views/backend/transaction/index.vue：获取收支明细列表】
+const fetchTransactions = async () => {
+  loading.value = true
+  try {
+    // 构建查询参数
+    const params = {
+      currentPage: currentPage.value,
+      size: pageSize.value,
+      type: filterForm.type !== '' ? filterForm.type : undefined,
+      startDate: filterForm.dateRange && filterForm.dateRange.length > 0 ? filterForm.dateRange[0] : undefined,
+      endDate: filterForm.dateRange && filterForm.dateRange.length > 0 ? filterForm.dateRange[1] : undefined
+    }
+    
+    // 根据用户角色确定API路径
+    let apiPath = '/transactions'
+    if (userStore.userInfo?.roleCode === 'ADMIN') {
+      apiPath = '/transactions/admin'
+    }
+    
+    await request.get(apiPath, params, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        transactions.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取收支明细失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/controller/TransactionController.java：获取收支明细列表】
+@Operation(summary = "获取当前用户的收支明细列表")
+@GetMapping
+public Result<Page<Transaction>> getTransactions(
+    @RequestParam(defaultValue = "1") Integer currentPage,
+    @RequestParam(defaultValue = "10") Integer size,
+    @RequestParam(required = false) Integer type,
+    @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
+    @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
+  
+  // 获取当前用户
+  User currentUser = JwtTokenUtils.getCurrentUser();
+  if (currentUser == null) {
+    return Result.unauthorized();
+  }
+  
+  try {
+    Page<Transaction> page = transactionService.getUserTransactionsByPage(
+        currentUser.getId(), currentPage, size, type, startDate, endDate);
+    return Result.success(page);
+  } catch (ServiceException e) {
+    return Result.fail(e.getMessage());
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/TransactionService.java：分页查询收支明细】
+public Page<Transaction> getUserTransactionsByPage(Long userId, Integer currentPage, Integer size, 
+                                                  Integer type, LocalDate startDate, LocalDate endDate) {
+  // 构建查询条件
+  LambdaQueryWrapper<Transaction> queryWrapper = new LambdaQueryWrapper<>();
+  queryWrapper.eq(Transaction::getUserId, userId);
+  
+  // 按交易类型筛选
+  if (type != null) {
+    queryWrapper.eq(Transaction::getType, type);
+  }
+  
+  // 按时间范围筛选
+  if (startDate != null) {
+    queryWrapper.ge(Transaction::getCreateTime, startDate.atStartOfDay());
+  }
+  if (endDate != null) {
+    queryWrapper.le(Transaction::getCreateTime, endDate.plusDays(1).atStartOfDay());
+  }
+  
+  // 按创建时间降序排序
+  queryWrapper.orderByDesc(Transaction::getCreateTime);
+  
+  // 分页查询
+  Page<Transaction> page = transactionMapper.selectPage(new Page<>(currentPage, size), queryWrapper);
+  
+  // 加载关联信息
+  for (Transaction transaction : page.getRecords()) {
+    loadAssociatedInfo(transaction);
+  }
+  
+  return page;
+}
+
+功能实现细节：
+1. 收支明细列表页面布局：
+   - 顶部筛选区域：
+     - 交易类型下拉选择（全部/收入/支出）
+     - 时间范围选择器
+     - 搜索按钮
+   - 表格展示区域：
+     - 交易ID
+     - 交易类型（带颜色标识：收入-绿色，支出-红色）
+     - 交易金额（带正负号和颜色：收入-绿色，支出-红色）
+     - 交易描述
+     - 关联订单/租赁记录信息
+     - 创建时间
+   - 分页控件
+
+2. 权限控制：
+   - 普通用户只能查看自己的收支明细
+   - 管理员可以查看所有用户的收支明细，并可以按用户筛选
+
+3. 数据展示优化：
+   - 金额格式化为两位小数
+   - 时间格式化为易读格式
+   - 交易类型和金额使用颜色区分
+   - 关联订单和租赁记录可点击查看详情
+
+3. 收支明细统计功能
+
+功能概述：
+系统提供收支明细统计功能，允许用户查看自己的收支统计信息，包括总收入、总支出、净收入，以及按月度/季度/年度的收支趋势图表。管理员可以查看平台整体的收支统计。
+
+实现流程：
+1. 用户进入收支统计页面
+2. 可选择统计时间范围
+3. 系统计算并展示总收入、总支出、净收入
+4. 生成收支趋势图表
+5. 展示收入/支出分类占比
+
+关键代码示例：
+【vue3/src/views/backend/transaction/statistics.vue：获取收支统计数据】
+const fetchTransactionStatistics = async () => {
+  loading.value = true
+  try {
+    // 构建查询参数
+    const params = {
+      startDate: filterForm.dateRange && filterForm.dateRange.length > 0 ? filterForm.dateRange[0] : undefined,
+      endDate: filterForm.dateRange && filterForm.dateRange.length > 0 ? filterForm.dateRange[1] : undefined,
+      groupBy: filterForm.groupBy || 'month'
+    }
+    
+    await request.get('/transactions/statistics', params, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        // 设置统计数据
+        statistics.value = res
+        
+        // 处理图表数据
+        processChartData(res)
+      }
+    })
+  } catch (error) {
+    console.error('获取收支统计失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/controller/TransactionController.java：获取收支统计】
+@Operation(summary = "获取当前用户的收支统计")
+@GetMapping("/statistics")
+public Result<TransactionStatisticsVO> getTransactionStatistics(
+    @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
+    @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate,
+    @RequestParam(defaultValue = "month") String groupBy) {
+  
+  // 获取当前用户
+  User currentUser = JwtTokenUtils.getCurrentUser();
+  if (currentUser == null) {
+    return Result.unauthorized();
+  }
+  
+  try {
+    TransactionStatisticsVO statistics = transactionService.getUserTransactionStatistics(
+        currentUser.getId(), startDate, endDate, groupBy);
+    return Result.success(statistics);
+  } catch (ServiceException e) {
+    return Result.fail(e.getMessage());
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/TransactionService.java：计算收支统计】
+public TransactionStatisticsVO getUserTransactionStatistics(Long userId, LocalDate startDate, 
+                                                           LocalDate endDate, String groupBy) {
+  // 设置默认时间范围（如果未指定）
+  if (startDate == null) {
+    startDate = LocalDate.now().minusMonths(6);
+  }
+  if (endDate == null) {
+    endDate = LocalDate.now();
+  }
+  
+  // 构建统计对象
+  TransactionStatisticsVO statistics = new TransactionStatisticsVO();
+  
+  // 计算总收入
+  BigDecimal totalIncome = calculateTotalAmount(userId, TransactionType.INCOME.getCode(), startDate, endDate);
+  statistics.setTotalIncome(totalIncome);
+  
+  // 计算总支出
+  BigDecimal totalExpense = calculateTotalAmount(userId, TransactionType.EXPENSE.getCode(), startDate, endDate);
+  statistics.setTotalExpense(totalExpense);
+  
+  // 计算净收入
+  statistics.setNetIncome(totalIncome.subtract(totalExpense));
+  
+  // 获取收支趋势数据
+  List<TransactionTrendVO> trends = calculateTransactionTrends(userId, startDate, endDate, groupBy);
+  statistics.setTrends(trends);
+  
+  return statistics;
+}
+
+功能实现细节：
+1. 收支统计页面布局：
+   - 顶部筛选区域：
+     - 时间范围选择器
+     - 分组方式选择（月度/季度/年度）
+   - 统计卡片区域：
+     - 总收入卡片（带金额和同比增长）
+     - 总支出卡片（带金额和同比增长）
+     - 净收入卡片（带金额和同比增长）
+   - 趋势图表区域：
+     - 收入/支出趋势折线图
+     - 收入/支出分类饼图
+
+2. 统计数据计算：
+   - 总收入：指定时间范围内的所有收入总和
+   - 总支出：指定时间范围内的所有支出总和
+   - 净收入：总收入减去总支出
+   - 趋势数据：按月/季/年分组计算收入和支出
+
+3. 图表展示：
+   - 使用ECharts库绘制趋势图和饼图
+   - 趋势图展示收入和支出的变化趋势
+   - 饼图展示收入和支出的分类占比
+
+4. 数据导出：
+   - 支持将统计数据导出为Excel或PDF
+   - 导出内容包括统计数据和图表
+
+4. 收支明细添加功能
+
+功能概述：
+系统提供收支明细添加功能，允许用户手动添加收入或支出记录。此外，系统还会在特定业务流程（如租赁创建、订单支付等）中自动生成相应的收支记录。
+
+实现流程：
+1. 用户点击"添加收支记录"按钮
+2. 弹出添加收支记录对话框
+3. 用户填写交易类型、金额、描述等信息
+4. 提交表单，系统验证数据有效性
+5. 保存收支记录到数据库
+
+关键代码示例：
+【vue3/src/views/backend/transaction/index.vue：添加收支记录】
+const submitTransaction = async () => {
+  // 表单验证
+  if (!form.type) {
+    ElMessage.warning('请选择交易类型')
+    return
+  }
+  
+  if (!form.amount || form.amount <= 0) {
+    ElMessage.warning('请输入有效的交易金额')
+    return
+  }
+  
+  if (!form.description || form.description.trim() === '') {
+    ElMessage.warning('请输入交易描述')
+    return
+  }
+  
+  loading.value = true
+  try {
+    await request.post('/transactions', form, {
+      onSuccess: () => {
+        ElMessage.success('添加收支记录成功')
+        dialogVisible.value = false
+        resetForm()
+        // 重新加载收支记录列表
+        fetchTransactions()
+      }
+    })
+  } catch (error) {
+    console.error('添加收支记录失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/controller/TransactionController.java：添加收支记录】
+@Operation(summary = "添加收支记录")
+@PostMapping
+public Result<Void> addTransaction(@RequestBody TransactionDTO transactionDTO) {
+  // 获取当前用户
+  User currentUser = JwtTokenUtils.getCurrentUser();
+  if (currentUser == null) {
+    return Result.unauthorized();
+  }
+  
+  try {
+    transactionService.addTransaction(currentUser.getId(), transactionDTO);
+    return Result.success();
+  } catch (ServiceException e) {
+    return Result.fail(e.getMessage());
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/TransactionService.java：添加收支记录】
+@Transactional(rollbackFor = Exception.class)
+public void addTransaction(Long userId, TransactionDTO dto) {
+  // 验证交易类型
+  if (dto.getType() == null || (dto.getType() != TransactionType.INCOME.getCode() 
+      && dto.getType() != TransactionType.EXPENSE.getCode())) {
+    throw new ServiceException("无效的交易类型");
+  }
+  
+  // 验证交易金额
+  if (dto.getAmount() == null || dto.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+    throw new ServiceException("交易金额必须大于0");
+  }
+  
+  // 验证交易描述
+  if (StringUtils.isEmpty(dto.getDescription())) {
+    throw new ServiceException("交易描述不能为空");
+  }
+  
+  // 创建交易记录
+  Transaction transaction = new Transaction();
+  transaction.setUserId(userId);
+  transaction.setType(dto.getType());
+  transaction.setAmount(dto.getAmount());
+  transaction.setDescription(dto.getDescription());
+  transaction.setOrderId(dto.getOrderId());
+  transaction.setLeaseRecordId(dto.getLeaseRecordId());
+  transaction.setCreateTime(LocalDateTime.now());
+  
+  // 保存到数据库
+  save(transaction);
+  
+  log.info("用户[{}]添加了一条交易记录，类型：{}，金额：{}", userId, 
+      dto.getType() == TransactionType.INCOME.getCode() ? "收入" : "支出", 
+      dto.getAmount());
+}
+
+功能实现细节：
+1. 添加收支记录对话框：
+   - 交易类型选择：单选按钮（收入/支出）
+   - 交易金额输入框：数字输入，限制两位小数
+   - 交易描述输入框：文本输入，限制最大长度
+   - 关联订单/租赁记录选择（可选）：下拉选择框
+   - 提交按钮
+
+2. 表单验证：
+   - 交易类型必选
+   - 交易金额必须大于0
+   - 交易描述不能为空
+
+3. 自动生成的收支记录：
+   - 租赁创建时，自动为房东生成租金收入记录
+   - 订单支付时，自动为租客生成租金支出记录
+   - 订单退款时，自动为租客生成退款收入记录和房东生成退款支出记录
+
+4. 权限控制：
+   - 普通用户只能添加自己的收支记录
+   - 管理员可以为任何用户添加收支记录
+
+5. 与其他模块的交互
+
+5.1 与订单模块的交互
+
+交互方式：
+1. 订单支付成功后，自动生成租客的支出记录
+2. 订单退款时，自动生成租客的收入记录和房东的支出记录
+3. 收支记录关联订单ID，可以查看关联订单详情
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：支付成功后生成收支记录】
+@Transactional(rollbackFor = Exception.class)
+public void handlePaymentSuccess(Long orderId, String paymentId) {
+  // 获取订单
+  Order order = getById(orderId);
+  if (order == null) {
+    throw new ServiceException("订单不存在");
+  }
+  
+  // 更新订单状态为已支付
+  order.setStatus(OrderStatus.PAID.getCode());
+  order.setPaymentId(paymentId);
+  order.setPayTime(LocalDateTime.now());
+  updateById(order);
+  
+  // 为租客生成支出记录
+  Transaction tenantExpense = new Transaction();
+  tenantExpense.setUserId(order.getTenantId());
+  tenantExpense.setType(TransactionType.EXPENSE.getCode());
+  tenantExpense.setAmount(order.getAmount());
+  tenantExpense.setDescription("房屋租赁支出 - 订单号: " + order.getOrderNo());
+  tenantExpense.setOrderId(order.getId());
+  tenantExpense.setCreateTime(LocalDateTime.now());
+  transactionService.save(tenantExpense);
+  
+  log.info("订单[{}]支付成功，已生成租客支出记录", orderId);
+}
+
+5.2 与租赁记录模块的交互
+
+交互方式：
+1. 租赁记录创建时，自动生成房东的收入记录
+2. 租赁提前终止时，可能生成退款相关的收支记录
+3. 收支记录关联租赁记录ID，可以查看关联租赁详情
+
+关键代码示例：
+【springboot/src/main/java/org/example/springboot/service/LeaseRecordService.java：创建租赁记录时生成收入记录】
+private void createIncomeTransactionForLandlord(LeaseRecord leaseRecord) {
+  // 创建房东收入记录
+  Transaction landlordIncome = new Transaction();
+  landlordIncome.setUserId(leaseRecord.getLandlordId());
+  landlordIncome.setType(TransactionType.INCOME.getCode());
+  landlordIncome.setAmount(leaseRecord.getRentAmount());
+  landlordIncome.setDescription("房屋租赁收入 - 租赁ID: " + leaseRecord.getId());
+  landlordIncome.setOrderId(leaseRecord.getOrderId());
+  landlordIncome.setLeaseRecordId(leaseRecord.getId());
+  landlordIncome.setCreateTime(LocalDateTime.now());
+  
+  // 保存收入记录
+  transactionService.save(landlordIncome);
+  
+  log.info("已为房东[{}]创建租赁收入记录，金额：{}", leaseRecord.getLandlordId(), leaseRecord.getRentAmount());
+}
+
+6. 安全与性能优化
+
+6.1 安全措施：
+- 严格的权限控制：用户只能查看和操作自己的收支记录
+- 数据验证：对所有用户输入进行严格验证，防止SQL注入和XSS攻击
+- 敏感数据保护：金额等敏感数据在传输和存储时进行加密
+- 操作日志：记录所有关键操作，便于审计和追踪
+
+6.2 性能优化：
+- 数据库索引：为用户ID、交易类型、创建时间等常用查询字段创建索引
+- 分页查询：大量数据采用分页方式展示，减少数据传输量
+- 缓存策略：对统计数据进行缓存，减少重复计算
+- 异步处理：大批量数据处理采用异步方式，提高响应速度
+
+7. 异常处理
+
+7.1 前端异常处理：
+- 网络错误处理：请求失败时显示友好的错误提示
+- 表单验证：在提交前进行数据验证，减少无效请求
+- 加载状态：显示加载中状态，提升用户体验
+- 空数据处理：处理无数据情况的显示
+
+7.2 后端异常处理：
+- 业务异常：使用ServiceException封装业务逻辑错误
+- 数据库异常：事务管理确保数据一致性
+- 日志记录：记录异常信息，便于问题排查
+- 统一响应：统一异常处理，返回标准格式的错误信息
+
+8. 总结
+
+租赁记录模块和收支明细模块是房屋租赁系统的核心功能模块之一，它们协同工作，共同支持系统的租赁管理和财务管理功能。
+
+租赁记录模块负责管理租赁合同的全生命周期，包括创建租赁记录、生成合同、查看租赁详情、评价租赁体验等功能。它与订单模块、房屋模块、用户模块紧密集成，确保租赁流程的顺利进行。
+
+收支明细模块则负责记录和管理系统中的所有财务交易，包括租金收入、支出等。它提供了收支明细的查询、统计和分析功能，帮助用户了解自己的财务状况。
+
+这两个模块的设计和实现遵循了以下原则：
+1. 功能完整性：覆盖租赁和财务管理的全流程
+2. 用户体验：简洁直观的界面，便捷的操作流程
+3. 数据安全：严格的权限控制和数据保护
+4. 性能优化：高效的数据处理和展示
+5. 可扩展性：良好的模块化设计，便于未来功能扩展
+
+通过这两个模块的实现，系统能够有效支持房屋租赁业务的管理，提高租赁过程的效率和透明度，为用户提供便捷的租赁和财务管理体验。

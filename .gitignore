@@ -1,14 +1,46 @@
-# 全局忽略：不要上传这些
-*.exe
-pink老师*
-/files
+# IDE
 .idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# 只允许上传这些（白名单模式，关键！）
-!.github/
-!springboot/
-!vue3/
-!houses_lease_db.sql
-!项目文档.md
-!完整项目文档.md
-!.gitignore
+# OS
+.DS_Store
+Thumbs.db
+
+# Executables
+*.exe
+
+# Logs
+*.log
+
+# Uploaded files directory
+/files
+springboot/files/
+
+# Backend build output
+springboot/target/
+
+# Frontend: dependencies
+vue3/node_modules/
+
+# Frontend: build output
+vue3/dist/
+
+# Frontend: local env
+vue3/.env.local
+vue3/.env.*.local
+
+# IDE project files
+*.iml
+
+# Crash dumps
+*.stackdump
+
+# Temp files
+*.tmp
+*.bak
+*.swp

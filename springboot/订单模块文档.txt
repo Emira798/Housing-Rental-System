@@ -1,0 +1,775 @@
+订单模块功能文档
+
+一、数据库与实体类设计
+
+1. 订单表（order）：
+   id：整数类型，主键，自增长，订单唯一标识
+   order_no：字符串类型，非空，唯一，订单编号
+   house_id：整数类型，非空，外键，关联房屋表
+   tenant_id：整数类型，非空，外键，关联用户表，租客ID
+   landlord_id：整数类型，非空，外键，关联用户表，房东ID
+   amount：小数类型，非空，订单金额
+   deposit：小数类型，非空，押金金额
+   status：整数类型，非空，订单状态（0-待支付，1-已支付待确认，2-已确认，3-已取消，4-已退款）
+   payment_time：日期时间类型，支付时间
+   payment_method：字符串类型，支付方式
+   create_time：日期时间类型，创建时间
+   update_time：日期时间类型，更新时间
+
+2. 实体类定义：
+   Order类：对应订单表，包含订单基本信息属性
+   【springboot/src/main/java/org/example/springboot/entity/Order.java】
+   public class Order {
+     private Long id;             // 订单ID
+     private String orderNo;      // 订单编号
+     private Long houseId;        // 房屋ID
+     private Long tenantId;       // 租客ID
+     private Long landlordId;     // 房东ID
+     private BigDecimal amount;   // 订单金额
+     private BigDecimal deposit;  // 押金金额
+     private Integer status;      // 状态(0:待支付,1:已支付待确认,2:已确认,3:已取消,4:已退款)
+     private LocalDateTime paymentTime;  // 支付时间
+     private String paymentMethod;       // 支付方式
+     private LocalDateTime createTime;   // 创建时间
+     private LocalDateTime updateTime;   // 更新时间
+     
+     // 非数据库字段，用于展示
+     private House house;         // 关联房屋信息
+     private User tenant;         // 关联租客信息
+     private User landlord;       // 关联房东信息
+   }
+
+二、订单创建功能
+
+功能概述：
+系统提供订单创建功能，允许租户在房屋详情页面创建租赁订单。创建订单时，系统会自动计算订单金额和押金，生成唯一的订单编号，并设置初始状态为待支付。
+
+实现流程：
+1. 租户在房屋详情页点击"立即租赁"按钮
+2. 系统检查用户是否登录以及是否为租户角色
+3. 弹出租赁确认对话框，显示房屋信息和租金详情
+4. 租户选择租赁周期（月付、季付、半年付、年付）
+5. 系统自动计算总金额
+6. 租户确认后提交订单
+7. 后端创建订单记录，生成订单编号
+8. 返回创建结果，提示用户是否立即支付
+
+关键代码示例：
+【vue3/src/views/frontend/house/HouseDetail.vue：创建订单】
+const createOrder = async () => {
+  creating.value = true
+  try {
+    const orderData = {
+      houseId: orderForm.houseId,
+      amount: parseFloat(totalAmount.value),
+      deposit: parseFloat(house.value.price)
+    }
+    
+    await request.post('/orders', orderData, {
+      successMsg: '订单创建成功',
+      onSuccess: (res) => {
+        rentDialogVisible.value = false
+        
+        // 提示用户是否前往支付
+        ElMessageBox.confirm(
+          '订单已创建成功，是否立即支付？',
+          '提示',
+          {
+            confirmButtonText: '去支付',
+            cancelButtonText: '稍后支付',
+            type: 'success'
+          }
+        ).then(() => {
+          router.push('/my-orders')
+        }).catch(() => {
+          router.push('/my-orders')
+        })
+      }
+    })
+  } catch (error) {
+    console.error('创建订单失败:', error)
+  } finally {
+    creating.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：创建订单】
+@Transactional
+public Order createOrder(Order order) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  // 查询房屋信息
+  House house = houseMapper.selectById(order.getHouseId());
+  if (house == null) {
+    throw new ServiceException("房屋不存在");
+  }
+  
+  // 检查房屋状态是否可租
+  if (house.getStatus() != 1) {
+    throw new ServiceException("该房屋不可租用");
+  }
+  
+  // 设置订单基本信息
+  order.setTenantId(user.getId());
+  order.setLandlordId(house.getLandlordId());
+  order.setOrderNo(generateOrderNo());
+  order.setStatus(OrderStatus.WAITING_PAYMENT.getValue());
+  order.setCreateTime(LocalDateTime.now());
+  order.setUpdateTime(LocalDateTime.now());
+  
+  // 保存订单
+  orderMapper.insert(order);
+  
+  return order;
+}
+
+三、订单支付功能
+
+功能概述：
+系统提供订单支付功能，允许租户对待支付状态的订单进行支付。支付成功后，订单状态变更为已支付待确认，并记录支付时间和支付方式。同时，系统会创建相应的交易记录。
+
+实现流程：
+1. 租户在订单列表或详情页点击"支付"按钮
+2. 弹出支付对话框，显示订单信息和支付金额
+3. 租户选择支付方式（支付宝、微信支付、银行卡）
+4. 确认支付后，系统更新订单状态为已支付待确认
+5. 记录支付时间和支付方式
+6. 创建租客支出和房东收入的交易记录
+7. 返回支付结果，刷新订单列表
+
+关键代码示例：
+【vue3/src/views/frontend/order/MyOrders.vue：支付订单】
+const confirmPay = async () => {
+  if (!payForm.paymentMethod) {
+    ElMessage.warning('请选择支付方式')
+    return
+  }
+
+  paying.value = true
+  try {
+    await request.put(`/orders/${payForm.id}/pay`, null, {
+      params: {
+        paymentMethod: payForm.paymentMethod
+      },
+      successMsg: '支付成功',
+      onSuccess: () => {
+        payDialogVisible.value = false
+        fetchOrders()
+      }
+    })
+  } catch (error) {
+    console.error('支付订单失败:', error)
+  } finally {
+    paying.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：支付订单】
+@Transactional
+public Order payOrder(Long orderId, String paymentMethod) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  // 查询订单
+  Order order = orderMapper.selectById(orderId);
+  if (order == null) {
+    throw new ServiceException("订单不存在");
+  }
+  
+  // 验证操作权限
+  if (!order.getTenantId().equals(user.getId())) {
+    throw new ServiceException("无权操作此订单");
+  }
+  
+  // 检查订单状态
+  if (!order.getStatus().equals(OrderStatus.WAITING_PAYMENT.getValue())) {
+    throw new ServiceException("订单状态不正确，无法支付");
+  }
+  
+  // 更新订单状态为已支付待确认
+  order.setStatus(OrderStatus.PAID_WAITING_CONFIRM.getValue());
+  order.setPaymentTime(LocalDateTime.now());
+  order.setPaymentMethod(paymentMethod);
+  order.setUpdateTime(LocalDateTime.now());
+  orderMapper.updateById(order);
+  
+  // 创建租客支出交易记录
+  Transaction tenantExpense = new Transaction();
+  tenantExpense.setOrderId(orderId);
+  tenantExpense.setUserId(user.getId());
+  tenantExpense.setType(TransactionType.EXPENSE.getValue());
+  tenantExpense.setAmount(order.getAmount());
+  tenantExpense.setDescription("租金支付-订单号:" + order.getOrderNo());
+  tenantExpense.setCreateTime(LocalDateTime.now());
+  transactionMapper.insert(tenantExpense);
+  
+  // 创建房东收入交易记录
+  Transaction landlordIncome = new Transaction();
+  landlordIncome.setOrderId(orderId);
+  landlordIncome.setUserId(order.getLandlordId());
+  landlordIncome.setType(TransactionType.INCOME.getValue());
+  landlordIncome.setAmount(order.getAmount());
+  landlordIncome.setDescription("租金收入-订单号:" + order.getOrderNo());
+  landlordIncome.setCreateTime(LocalDateTime.now());
+  transactionMapper.insert(landlordIncome);
+  
+  return order;
+}
+
+四、订单确认功能
+
+功能概述：
+系统提供订单确认功能，允许房东对已支付待确认状态的订单进行确认。确认后，订单状态变更为已确认，同时房屋状态变更为已出租，并生成租赁记录和合同。
+
+实现流程：
+1. 房东在订单列表页面点击"确认"按钮
+2. 弹出确认对话框，提示确认后房屋将变为已出租状态
+3. 房东确认后，系统更新订单状态为已确认
+4. 同时更新相关房屋状态为已出租
+5. 创建租赁记录和合同
+6. 返回确认结果，刷新订单列表
+
+关键代码示例：
+【vue3/src/views/backend/order/index.vue：确认订单】
+const handleConfirm = (row) => {
+  ElMessageBox.confirm(
+    '确认接受此订单吗？确认后房屋将变为已出租状态',
+    '订单确认',
+    {
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      await request.put(`/orders/${row.id}/confirm`, null, {
+        successMsg: '订单确认成功',
+        onSuccess: () => {
+          fetchOrders()
+        }
+      })
+    } catch (error) {
+      console.error('确认订单失败:', error)
+    }
+  }).catch(() => {})
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：确认订单】
+@Transactional
+public Order confirmOrder(Long orderId) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  // 查询订单
+  Order order = orderMapper.selectById(orderId);
+  if (order == null) {
+    throw new ServiceException("订单不存在");
+  }
+  
+  // 验证操作权限，只有房东可以确认订单
+  if (!order.getLandlordId().equals(user.getId()) && !"ADMIN".equals(user.getRoleCode())) {
+    throw new ServiceException("无权操作此订单");
+  }
+  
+  // 检查订单状态，只有已支付待确认的订单可以确认
+  if (!order.getStatus().equals(OrderStatus.PAID_WAITING_CONFIRM.getValue())) {
+    throw new ServiceException("订单状态不正确，无法确认");
+  }
+  
+  // 获取房屋信息
+  House house = houseMapper.selectById(order.getHouseId());
+  if (house == null) {
+    throw new ServiceException("房屋信息不存在");
+  }
+  
+  // 更新房屋状态为已出租
+  house.setStatus(2); // 2表示已出租
+  houseMapper.updateById(house);
+  
+  // 更新订单状态为已确认
+  order.setStatus(OrderStatus.CONFIRMED.getValue());
+  order.setUpdateTime(LocalDateTime.now());
+  orderMapper.updateById(order);
+  
+  // 创建租赁记录并生成合同
+  LeaseRecord leaseRecord = leaseRecordService.createLeaseRecord(order);
+  log.info("创建租赁记录成功，ID：{}", leaseRecord.getId());
+  
+  return order;
+}
+
+五、订单取消功能
+
+功能概述：
+系统提供订单取消功能，允许租户对待支付状态的订单进行取消。取消后，订单状态变更为已取消，不再需要支付。
+
+实现流程：
+1. 租户在订单列表页面点击"取消订单"按钮
+2. 弹出确认对话框，提示取消后不可恢复
+3. 租户确认后，系统更新订单状态为已取消
+4. 返回取消结果，刷新订单列表
+
+关键代码示例：
+【vue3/src/views/frontend/order/MyOrders.vue：取消订单】
+const handleCancel = (order) => {
+  ElMessageBox.confirm(
+    '确认取消此订单吗？取消后不可恢复',
+    '订单取消',
+    {
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      await request.put(`/orders/${order.id}/cancel`, null, {
+        successMsg: '订单取消成功',
+        onSuccess: () => {
+          fetchOrders()
+        }
+      })
+    } catch (error) {
+      console.error('取消订单失败:', error)
+    }
+  }).catch(() => {})
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：取消订单】
+@Transactional
+public Order cancelOrder(Long orderId) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  // 查询订单
+  Order order = orderMapper.selectById(orderId);
+  if (order == null) {
+    throw new ServiceException("订单不存在");
+  }
+  
+  // 验证操作权限
+  if (!order.getTenantId().equals(user.getId())) {
+    throw new ServiceException("无权操作此订单");
+  }
+  
+  // 检查订单状态，只有待支付的订单可以取消
+  if (!order.getStatus().equals(OrderStatus.WAITING_PAYMENT.getValue())) {
+    throw new ServiceException("订单状态不正确，无法取消");
+  }
+  
+  // 更新订单状态为已取消
+  order.setStatus(OrderStatus.CANCELED.getValue());
+  order.setUpdateTime(LocalDateTime.now());
+  orderMapper.updateById(order);
+  
+  return order;
+}
+
+六、订单退款功能
+
+功能概述：
+系统提供订单退款功能，允许租户对已支付待确认状态的订单申请退款。退款后，订单状态变更为已退款，并创建相应的交易记录。
+
+实现流程：
+1. 租户在订单列表页面点击"申请退款"按钮
+2. 弹出确认对话框，提示退款申请将立即处理
+3. 租户确认后，系统更新订单状态为已退款
+4. 创建租客收入和房东支出的交易记录
+5. 返回退款结果，刷新订单列表
+
+关键代码示例：
+【vue3/src/views/frontend/order/MyOrders.vue：申请退款】
+const handleRefund = (order) => {
+  ElMessageBox.confirm(
+    '确认申请退款吗？申请后将立即处理退款',
+    '退款申请',
+    {
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      await request.post(`/orders/${order.id}/refund`, null, {
+        successMsg: '退款申请成功',
+        onSuccess: () => {
+          fetchOrders()
+        }
+      })
+    } catch (error) {
+      console.error('申请退款失败:', error)
+    }
+  }).catch(() => {})
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：申请退款】
+@Transactional
+public Order refundOrder(Long orderId) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  // 查询订单
+  Order order = orderMapper.selectById(orderId);
+  if (order == null) {
+    throw new ServiceException("订单不存在");
+  }
+  
+  // 验证操作权限，只有租客可以申请退款
+  if (!order.getTenantId().equals(user.getId())) {
+    throw new ServiceException("无权操作此订单");
+  }
+  
+  // 检查订单状态，只有已支付待确认的订单可以退款
+  if (!order.getStatus().equals(OrderStatus.PAID_WAITING_CONFIRM.getValue())) {
+    throw new ServiceException("订单状态不正确，无法申请退款");
+  }
+  
+  // 更新订单状态为已退款
+  order.setStatus(OrderStatus.REFUNDED.getValue());
+  order.setUpdateTime(LocalDateTime.now());
+  orderMapper.updateById(order);
+  
+  // 创建租客收入交易记录（退款）
+  Transaction tenantIncome = new Transaction();
+  tenantIncome.setOrderId(orderId);
+  tenantIncome.setUserId(user.getId());
+  tenantIncome.setType(TransactionType.INCOME.getValue());
+  tenantIncome.setAmount(order.getAmount());
+  tenantIncome.setDescription("退款收入-订单号:" + order.getOrderNo());
+  tenantIncome.setCreateTime(LocalDateTime.now());
+  transactionMapper.insert(tenantIncome);
+  
+  // 创建房东支出交易记录（退款）
+  Transaction landlordExpense = new Transaction();
+  landlordExpense.setOrderId(orderId);
+  landlordExpense.setUserId(order.getLandlordId());
+  landlordExpense.setType(TransactionType.EXPENSE.getValue());
+  landlordExpense.setAmount(order.getAmount());
+  landlordExpense.setDescription("退款支出-订单号:" + order.getOrderNo());
+  landlordExpense.setCreateTime(LocalDateTime.now());
+  transactionMapper.insert(landlordExpense);
+  
+  return order;
+}
+
+七、订单列表查询功能
+
+功能概述：
+系统提供订单列表查询功能，根据不同用户角色展示不同的订单列表。租户可以查看自己的订单，房东可以查看与自己房屋相关的订单，管理员可以查看所有订单。支持按订单编号、状态等条件筛选，并提供分页功能。
+
+实现流程：
+1. 根据用户角色加载对应的订单列表页面
+2. 支持按订单编号、状态等条件筛选
+3. 分页展示订单列表数据
+4. 显示订单基本信息、房屋信息、租客信息等
+5. 根据订单状态显示不同的操作按钮
+
+功能实现细节：
+1. 前台我的订单页面（租户视角）：
+   - 顶部筛选区域：支持按订单编号和状态筛选
+   - Tab分组：全部、待支付、待确认、已确认、已取消
+   - 订单卡片展示：
+     - 订单编号和下单时间
+     - 房屋基本信息（标题、地址、图片）
+     - 订单金额和押金
+     - 订单状态
+     - 支付信息（已支付订单）
+     - 操作按钮（根据状态显示）
+
+2. 后台订单管理页面（房东/管理员视角）：
+   - 搜索区域：支持按订单编号、状态筛选
+   - 管理员额外支持按租客用户名和房东用户名筛选
+   - 表格展示订单信息：
+     - 订单编号
+     - 房屋标题
+     - 租客信息
+     - 房东信息（仅管理员可见）
+     - 订单金额和押金
+     - 订单状态
+     - 支付信息
+     - 创建时间
+     - 操作按钮（根据状态和角色显示）
+
+3. 权限控制：
+   - 租户只能查看自己的订单
+   - 房东只能查看与自己房屋相关的订单
+   - 管理员可以查看所有订单
+   - 操作按钮根据订单状态和用户角色动态显示
+
+关键代码示例：
+【vue3/src/views/frontend/order/MyOrders.vue：租户获取订单列表】
+const fetchOrders = async () => {
+  loading.value = true
+  try {
+    // 构建查询参数
+    const params = {
+      currentPage: currentPage.value,
+      size: pageSize.value,
+      orderNo: filterForm.orderNo || undefined,
+      status: filterForm.status !== '' ? filterForm.status : undefined
+    }
+    
+    // 根据激活的标签页设置状态
+    if (activeTab.value === 'unpaid') {
+      params.status = 0
+    } else if (activeTab.value === 'unconfirmed') {
+      params.status = 1
+    } else if (activeTab.value === 'confirmed') {
+      params.status = 2
+    } else if (activeTab.value === 'cancelled') {
+      params.status = 3
+    }
+    
+    await request.get('/orders/tenant', params, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        orders.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取订单列表失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【vue3/src/views/backend/order/index.vue：后台获取订单列表】
+const fetchOrders = async () => {
+  loading.value = true
+  try {
+    // 根据用户角色获取不同的订单列表
+    let url = '/orders'
+    if (isAdmin.value) {
+      url = '/orders/admin'
+    } else if (isLandlord.value) {
+      url = '/orders/landlord'
+    } else if (isTenant.value) {
+      url = '/orders/tenant'
+    }
+
+    // 构建查询参数
+    const params = {
+      currentPage: currentPage.value,
+      size: pageSize.value,
+      orderNo: searchForm.orderNo || undefined,
+      status: searchForm.status !== '' ? searchForm.status : undefined
+    }
+
+    // 管理员可以按租客用户名和房东用户名查询
+    if (isAdmin.value) {
+      params.tenantUsername = searchForm.tenantUsername || undefined
+      params.landlordUsername = searchForm.landlordUsername || undefined
+    }
+
+    await request.get(url, params, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        tableData.value = res.records
+        total.value = res.total
+      }
+    })
+  } catch (error) {
+    console.error('获取订单列表失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：租客获取订单列表】
+public Page<Order> getTenantOrders(String orderNo, Integer status, Integer currentPage, Integer size) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  LambdaQueryWrapper<Order> queryWrapper = new LambdaQueryWrapper<>();
+  queryWrapper.eq(Order::getTenantId, user.getId());
+  
+  // 添加查询条件
+  if (StringUtils.isNotBlank(orderNo)) {
+    queryWrapper.like(Order::getOrderNo, orderNo);
+  }
+  if (status != null) {
+    queryWrapper.eq(Order::getStatus, status);
+  }
+  
+  // 按创建时间降序排序
+  queryWrapper.orderByDesc(Order::getCreateTime);
+  
+  // 分页查询
+  Page<Order> page = orderMapper.selectPage(new Page<>(currentPage, size), queryWrapper);
+  
+  // 填充关联信息
+  for (Order order : page.getRecords()) {
+    order.setHouse(houseMapper.selectById(order.getHouseId()));
+    order.setLandlord(userMapper.selectById(order.getLandlordId()));
+  }
+  
+  return page;
+}
+
+八、订单详情查看功能
+
+功能概述：
+系统提供订单详情查看功能，允许用户查看订单的详细信息，包括订单基本信息、房屋信息、租客信息、房东信息、支付信息等。
+
+实现流程：
+1. 用户在订单列表页面点击"详情"按钮
+2. 弹出订单详情对话框
+3. 根据订单ID获取订单详细信息
+4. 展示订单详情，包括关联的房屋、租客、房东信息
+
+关键代码示例：
+【vue3/src/views/frontend/order/MyOrders.vue：查看订单详情】
+const viewOrderDetail = async (order) => {
+  try {
+    await request.get(`/orders/${order.id}`, {}, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        Object.assign(detailForm, res)
+        detailDialogVisible.value = true
+      }
+    })
+  } catch (error) {
+    console.error('获取订单详情失败:', error)
+  }
+}
+
+【vue3/src/views/backend/order/index.vue：查看订单详情】
+const handleDetail = async (row) => {
+  try {
+    await request.get(`/orders/${row.id}`, {}, {
+      showDefaultMsg: false,
+      onSuccess: (res) => {
+        Object.assign(detailForm, res)
+        detailDialogVisible.value = true
+      }
+    })
+  } catch (error) {
+    console.error('获取订单详情失败:', error)
+  }
+}
+
+【springboot/src/main/java/org/example/springboot/service/OrderService.java：获取订单详情】
+public Order getOrderDetail(Long orderId) {
+  // 获取当前登录用户
+  User user = JwtTokenUtils.getCurrentUser();
+  if (user == null) {
+    throw new ServiceException("请先登录");
+  }
+  
+  // 查询订单
+  Order order = orderMapper.selectById(orderId);
+  if (order == null) {
+    throw new ServiceException("订单不存在");
+  }
+  
+  // 获取关联信息
+  order.setHouse(houseMapper.selectById(order.getHouseId()));
+  order.setTenant(userMapper.selectById(order.getTenantId()));
+  order.setLandlord(userMapper.selectById(order.getLandlordId()));
+  
+  return order;
+}
+
+功能实现细节：
+1. 订单详情对话框内容：
+   - 订单基本信息：订单编号、状态、创建时间、更新时间
+   - 房屋信息：标题、地址
+   - 金额信息：订单金额、押金金额
+   - 租客信息：姓名、电话
+   - 房东信息：姓名、电话
+   - 支付信息：支付时间、支付方式
+
+2. 前台订单详情展示：
+   - 使用el-descriptions组件展示详情信息
+   - 状态使用带颜色的标签展示
+   - 时间格式化显示
+
+3. 后台订单详情展示：
+   - 与前台类似，但可能包含更多管理信息
+   - 管理员可查看更完整的信息
+
+九、与其他模块的交互
+
+1. 订单模块与用户模块的交互：
+   - 订单创建时关联租客用户ID和房东用户ID
+   - 订单列表展示时显示租客和房东的姓名、联系方式等信息
+   - 权限控制：租户只能操作自己的订单，房东只能操作与自己房屋相关的订单
+   - 不同角色用户（租户、房东、管理员）有不同的订单操作权限
+
+2. 订单模块与房屋模块的交互：
+   - 订单创建时关联房屋ID，并验证房屋状态是否可租
+   - 订单确认时更新房屋状态为已出租
+   - 订单列表和详情展示时显示房屋标题、地址、图片等信息
+   - 已出租状态的房屋不能再创建新订单
+
+3. 订单模块与交易模块的交互：
+   - 订单支付时创建租客支出和房东收入的交易记录
+   - 订单退款时创建租客收入和房东支出的交易记录
+   - 交易记录关联订单ID，用于后续查询和统计
+
+4. 订单模块与租赁记录模块的交互：
+   - 订单确认后创建租赁记录和合同
+   - 租赁记录关联订单ID，记录租赁的详细信息
+
+十、安全性和性能优化
+
+1. 安全性措施：
+   - 权限控制：严格控制订单的创建、查看和操作权限
+   - 数据验证：前后端双重验证订单数据
+   - 防SQL注入：使用参数化查询和MyBatis-Plus框架
+   - 防XSS攻击：过滤用户输入的HTML标签
+   - 敏感信息保护：用户联系方式等敏感信息需要权限验证后才能查看
+
+2. 性能优化措施：
+   - 分页查询：避免一次加载过多数据
+   - 延迟加载：关联数据采用按需加载方式
+   - 索引优化：为常用查询字段（如订单编号、状态、用户ID等）创建索引
+   - 缓存策略：缓存常用的订单状态和类型数据
+   - 批量操作：批量处理订单数据，减少数据库交互次数
+
+十一、异常处理
+
+1. 前端异常处理：
+   - 网络错误：请求失败时显示友好提示
+   - 数据为空：无数据时显示空状态提示
+   - 加载状态：数据加载过程中显示加载动画
+   - 表单验证：输入错误时显示错误提示
+   - 操作确认：重要操作（如支付、取消、退款）前进行二次确认
+
+2. 后端异常处理：
+   - 业务异常：使用ServiceException封装业务错误
+   - 权限异常：无权限操作时返回403错误
+   - 数据库异常：数据库操作失败时回滚事务
+   - 日志记录：记录关键操作和异常信息
+   - 状态检查：操作前检查订单状态是否符合要求
+
+十二、总结
+
+订单模块是整个租房系统的核心业务模块之一，实现了房屋租赁过程中的订单创建、支付、确认、取消、退款等完整流程。通过前后端分离的架构，实现了高效的数据交互和良好的用户体验。主要功能包括：
+
+1. 订单管理：支持订单的创建、支付、确认、取消、退款等操作
+2. 订单查询：根据不同用户角色提供不同的订单查询视图
+3. 订单详情：展示订单的详细信息，包括关联的房屋、租客、房东信息
+4. 权限控制：根据用户角色和订单状态控制操作权限
+5. 状态流转：实现订单从创建到完成的完整状态流转
+
+系统充分考虑了安全性、性能和用户体验，实现了一个功能完善、操作便捷的订单管理平台，为房屋租赁业务提供了可靠的支持。 
