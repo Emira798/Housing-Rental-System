@@ -34,7 +34,7 @@ jobs:
       uses: actions/cache@v3
       with:
         path: ~/.m2
-        key: ${{ runner.os }}-m2-${{ hashFiles('springboot/pom.xml') }}
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
         restore-keys: ${{ runner.os }}-m2
 
     - name: Build and compile backend
@@ -66,7 +66,7 @@ jobs:
       with:
         node-version: '18'
         cache: 'npm'
-        cache-dependency-path: ./vue3/package-lock.json
+        cache-dependency-path: vue3/package-lock.json
 
     - name: Install dependencies
       working-directory: ./vue3
