@@ -22,9 +22,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # ✅ 关键：强制把代码直接 checkout 到当前工作目录，不要多一层仓库名文件夹
-          path: '.'
+
+      # 调试用：打印实际目录结构（构建成功后可以删掉）
+      - name: Debug directory structure
+        run: |
+          echo "GitHub Workspace: ${{ github.workspace }}"
+          ls -la ${{ github.workspace }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v3
@@ -36,94 +39,66 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-m2-${{ hashFiles('springboot/pom.xml') }}
+          key: ${{ runner.os }}-m2-${{ hashFiles('${{ github.workspace }}/springboot/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
 
-      - name: Debug directory structure
-        run: |
-          echo "Current directory: $(pwd)"
-          echo "Directory structure:"
-          ls -la
-          echo "Looking for springboot directory:"
-          find . -name "springboot" -type d
-          echo "Looking for pom.xml:"
-          find . -name "pom.xml"
-
       - name: Build and compile backend
-        working-directory: ./springboot
-        run: mvn clean compile
+        run: mvn -f ${{ github.workspace }}/springboot/pom.xml clean compile
 
       - name: Run backend tests
-        working-directory: ./springboot
-        run: mvn test -Dspring.profiles.active=test
+        run: mvn -f ${{ github.workspace }}/springboot/pom.xml test -Dspring.profiles.active=test
 
       - name: Package backend
-        working-directory: ./springboot
-        run: mvn package -DskipTests
+        run: mvn -f ${{ github.workspace }}/springboot/pom.xml package -DskipTests
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: springboot-app
-          path: ./springboot/target/*.jar
+          path: ${{ github.workspace }}/springboot/target/*.jar
 
   frontend-build:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # ✅ 同样强制 checkout 到根目录
-          path: '.'
-
-      - name: Debug frontend structure
-        run: |
-          echo "Current directory: $(pwd)"
-          echo "Directory structure:"
-          ls -la
-          echo "Looking for vue3 directory:"
-          find . -name "vue3" -type d
-          echo "Looking for package-lock.json:"
-          find . -name "package-lock.json"
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18'
           cache: 'npm'
-          cache-dependency-path: vue3/package-lock.json
+          cache-dependency-path: ${{ github.workspace }}/vue3/package-lock.json
 
       - name: Install dependencies
-        working-directory: ./vue3
+        working-directory: ${{ github.workspace }}/vue3
         run: npm ci
 
       - name: Lint frontend
-        working-directory: ./vue3
+        working-directory: ${{ github.workspace }}/vue3
         run: npm run lint
 
       - name: Build frontend
-        working-directory: ./vue3
+        working-directory: ${{ github.workspace }}/vue3
         run: npm run build
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
         with:
           name: vue3-app
-          path: ./vue3/dist
+          path: ${{ github.workspace }}/vue3/dist
 
   security-scan:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: '.'
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
-          scan-ref: '.'
+          scan-ref: ${{ github.workspace }}
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
