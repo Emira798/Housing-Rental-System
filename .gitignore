@@ -1,0 +1,14 @@
+# 全局忽略：不要上传这些
+*.exe
+pink老师*
+/files
+.idea/
+
+# 只允许上传这些（白名单模式，关键！）
+!.github/
+!springboot/
+!vue3/
+!houses_lease_db.sql
+!项目文档.md
+!完整项目文档.md
+!.gitignore
