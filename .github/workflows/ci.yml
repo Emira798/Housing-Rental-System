@@ -22,6 +22,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # ✅ 关键：强制把代码直接 checkout 到当前工作目录，不要多一层仓库名文件夹
+          path: '.'
 
       - name: Set up JDK 17
         uses: actions/setup-java@v3
@@ -59,6 +62,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # ✅ 同样强制 checkout 到根目录
+          path: '.'
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
@@ -90,6 +96,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: '.'
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
