@@ -9,8 +9,6 @@ on:
 jobs:
   backend-build:
     runs-on: ubuntu-latest
-    # ✅ 新增：统一指定后端工作目录，所有步骤自动在springboot下执行
-    working-directory: ./springboot
 
     services:
       mysql:
@@ -30,36 +28,34 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          # ❌ 移除：setup-java的cache默认在根目录找pom.xml，和我们的子目录结构不兼容
-          # cache: maven
 
       - name: Cache Maven packages
         uses: actions/cache@v3
         with:
           path: ~/.m2/repository
-          # ✅ 修正：明确指定springboot下的pom.xml作为缓存key
-          key: ${{ runner.os }}-m2-${{ hashFiles('../springboot/pom.xml') }}
+          key: ${{ runner.os }}-m2-${{ hashFiles('springboot/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
 
       - name: Build and compile backend
+        working-directory: ./springboot
         run: mvn clean compile
 
       - name: Run backend tests
+        working-directory: ./springboot
         run: mvn test -Dspring.profiles.active=test
 
       - name: Package backend
+        working-directory: ./springboot
         run: mvn package -DskipTests
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: springboot-app
-          path: ./target/*.jar
+          path: ./springboot/target/*.jar
 
   frontend-build:
     runs-on: ubuntu-latest
-    # ✅ 新增：统一指定前端工作目录，所有步骤自动在vue3下执行
-    working-directory: ./vue3
 
     steps:
       - uses: actions/checkout@v4
@@ -69,23 +65,25 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
-          # ✅ 保留你原有的正确配置
-          cache-dependency-path: ./package-lock.json
+          cache-dependency-path: vue3/package-lock.json
 
       - name: Install dependencies
+        working-directory: ./vue3
         run: npm ci
 
       - name: Lint frontend
+        working-directory: ./vue3
         run: npm run lint
 
       - name: Build frontend
+        working-directory: ./vue3
         run: npm run build
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
         with:
           name: vue3-app
-          path: ./dist
+          path: ./vue3/dist
 
   security-scan:
     runs-on: ubuntu-latest
@@ -110,7 +108,6 @@ jobs:
 
     steps:
       - name: Download artifacts
-        # ✅ 统一版本：和upload-artifact保持一致为v4
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
