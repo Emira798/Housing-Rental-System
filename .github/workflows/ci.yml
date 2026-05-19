@@ -50,7 +50,7 @@ jobs:
       run: mvn package -DskipTests
 
     - name: Upload backend artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: springboot-app
         path: ./springboot/target/*.jar
@@ -81,7 +81,7 @@ jobs:
       run: npm run build
 
     - name: Upload frontend artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: vue3-app
         path: ./vue3/dist
